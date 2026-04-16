@@ -763,10 +763,9 @@ function renderSettingsBpList() {
     const selected = getSelectedLink(bp);
     const displayText = linkDisplayText(selected);
 
-    // Disable width only if the linked *variable* actually resolves. Mode-linked
-    // breakpoints don't produce a numeric width inside the plugin — the width
-    // field stays editable as a fallback value if the source isn't bound.
-    const linked = !!selected && selected.kind === 'variable';
+    // Width field is always editable — typing a manual value clears the token link.
+    // If a token is linked, the field shows its resolved value as a reference.
+    const linked = false;
 
     card.innerHTML = `
       <div class="settings-bp-top">
@@ -824,7 +823,25 @@ function renderSettingsBpList() {
     el.addEventListener('input', e => {
       const val = parseInt(e.target.value);
       if (!isNaN(val) && val > 0) {
-        state.breakpoints[parseInt(e.target.dataset.index)].width = val;
+        const i = parseInt(e.target.dataset.index);
+        const bp = state.breakpoints[i];
+        bp.width = val;
+        // Typing a manual width clears any linked token/mode — manual value wins
+        const hadLink = !!(bp.variableId || bp.variableKey || bp.modeId);
+        if (hadLink) {
+          bp.variableId = null;
+          bp.variableKey = null;
+          bp.modeCollectionKey = null;
+          bp.modeCollectionId = null;
+          bp.modeId = null;
+          // Update the combobox display to reflect the cleared link
+          const wrap = list.querySelector(`.var-combobox[data-index="${i}"]`);
+          if (wrap) {
+            wrap.classList.remove('has-value');
+            const comboInput = wrap.querySelector('.var-combobox-input');
+            if (comboInput) { comboInput.value = ''; comboInput.classList.remove('has-value'); }
+          }
+        }
         persistAndSync();
       }
     });
@@ -1176,33 +1193,38 @@ function wireCombobox(wrap, i) {
     } else if (rawValue.startsWith('local:')) {
       bp.variableId = rawValue.slice(6);
       const v = state.variableOptions.find(v => v.id === bp.variableId);
-      if (v && v.value !== null && widthInput) widthInput.value = v.value;
+      if (v && v.value !== null) {
+        bp.width = v.value;
+        if (widthInput) widthInput.value = v.value;
+      }
     } else if (rawValue.startsWith('library:')) {
       bp.variableKey = rawValue.slice(8);
+      const v = state.variableOptions.find(v => v.key === bp.variableKey);
+      if (v && v.value !== null) {
+        bp.width = v.value;
+        if (widthInput) widthInput.value = v.value;
+      }
     } else if (rawValue.startsWith('mode|')) {
       // mode|<key or 'local'>|<collectionId or ''>|<modeId>
-      // Using `|` because collectionId and modeId can contain `:` internally.
       const parts = rawValue.split('|');
       const keyOrLocal = parts[1];
       const id = parts[2];
-      const modeId = parts.slice(3).join('|'); // be tolerant if modeId ever contains `|`
+      const modeId = parts.slice(3).join('|');
       bp.modeCollectionKey = keyOrLocal === 'local' ? null : keyOrLocal;
       bp.modeCollectionId = id || null;
       bp.modeId = modeId;
+      // Modes don't carry a resolved width, but the field keeps the current
+      // bp.width as a fallback for non-bound sources.
     }
 
-    // Width input stays editable unless a *variable* is linked and resolves.
-    // For mode links the user may want to keep a fallback width typed here.
     const resolved = getSelectedLink(bp);
-    const varLinked = !!resolved && resolved.kind === 'variable';
-    if (widthInput) {
-      widthInput.disabled = varLinked;
-      widthInput.style.opacity = varLinked ? '0.4' : '1';
-    }
     const anyLink = !!resolved;
     wrap.classList.toggle('has-value', anyLink);
     input.classList.toggle('has-value', anyLink);
     closePopup();
+    // Sync the updated width to the main panel + persist
+    renderBpList();
+    send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
   };
 
   // Focus: clear display and show full list
