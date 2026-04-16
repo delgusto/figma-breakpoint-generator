@@ -763,9 +763,10 @@ function renderSettingsBpList() {
     const selected = getSelectedLink(bp);
     const displayText = linkDisplayText(selected);
 
-    // Width field is always editable — typing a manual value clears the token link.
-    // If a token is linked, the field shows its resolved value as a reference.
-    const linked = false;
+    // Mode-linked: disable the width field (width is driven by the bound variable).
+    // Variable-linked or manual: editable (typing clears the link).
+    const isModeLinked = !!selected && selected.kind === 'mode';
+    const linked = isModeLinked;
 
     card.innerHTML = `
       <div class="settings-bp-top">
@@ -1138,7 +1139,11 @@ function buildComboboxPopup(variables, bp, filter) {
       let nameHtml, valueHtml;
       if (item.kind === 'mode') {
         nameHtml = escHtml(item.modeName);
-        valueHtml = '<span class="var-option-pill">mode</span>';
+        // Show the resolved width value if we found one via a "width" variable
+        // in the collection; otherwise just flag it as a mode.
+        valueHtml = item.value != null
+          ? `${item.value}px <span class="var-option-pill">mode</span>`
+          : '<span class="var-option-pill">mode</span>';
       } else {
         nameHtml = escHtml(leafName(item.name));
         valueHtml = item.value !== null ? `${item.value}px` : '—';
@@ -1213,12 +1218,20 @@ function wireCombobox(wrap, i) {
       bp.modeCollectionKey = keyOrLocal === 'local' ? null : keyOrLocal;
       bp.modeCollectionId = id || null;
       bp.modeId = modeId;
-      // Modes don't carry a resolved width, but the field keeps the current
-      // bp.width as a fallback for non-bound sources.
     }
 
     const resolved = getSelectedLink(bp);
     const anyLink = !!resolved;
+    const isModeLink = !!resolved && resolved.kind === 'mode';
+
+    // Mode-linked: width is driven by the bound variable, so disable the field.
+    // Variable-linked or manual: field stays editable.
+    if (widthInput) {
+      widthInput.disabled = isModeLink;
+      widthInput.style.opacity = isModeLink ? '0.4' : '1';
+      if (isModeLink) widthInput.value = '';
+    }
+
     wrap.classList.toggle('has-value', anyLink);
     input.classList.toggle('has-value', anyLink);
     closePopup();

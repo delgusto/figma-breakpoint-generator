@@ -162,11 +162,49 @@ async function getFloatVariables() {
   return result;
 }
 
+// Find the first FLOAT variable in a collection whose name contains "width" (case-insensitive).
+// Returns the Variable object or null. Used to sample a width value per mode.
+async function findWidthVariable(collection) {
+  if (!collection || !collection.variableIds) return null;
+  for (const varId of collection.variableIds) {
+    try {
+      const v = await figma.variables.getVariableByIdAsync(varId);
+      if (v && v.resolvedType === 'FLOAT' && v.name.toLowerCase().includes('width')) return v;
+    } catch (err) {}
+  }
+  return null;
+}
+
+// Resolve a specific variable's value in a specific mode (not the default), following aliases.
+async function resolveVariableValueInMode(variable, modeId) {
+  var seen = new Set();
+  var current = variable;
+  for (var hop = 0; hop < 10; hop++) {
+    if (seen.has(current.id)) return null;
+    seen.add(current.id);
+    var val = current.valuesByMode[modeId];
+    // If the mode doesn't exist on this variable, try the collection's default
+    if (val === undefined) {
+      var col = await figma.variables.getVariableCollectionByIdAsync(current.variableCollectionId);
+      if (col) val = current.valuesByMode[col.defaultModeId];
+    }
+    if (typeof val === 'number') return Math.round(val);
+    if (val && typeof val === 'object' && val.type === 'VARIABLE_ALIAS') {
+      current = await figma.variables.getVariableByIdAsync(val.id);
+      if (!current) return null;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
 // Enumerate every (collection, mode) pair from local + library collections that have >1 mode.
-// These are the units users can bind a breakpoint to for mode-override generation.
+// For each mode, try to resolve a "width" variable's value in that mode so the UI can
+// show and auto-fill the width field.
 async function getVariableCollectionModes() {
   const result = [];
-  const seenCollectionKeys = new Set(); // dedupe library collections already imported locally
+  const seenCollectionKeys = new Set();
 
   // Local collections
   try {
@@ -174,7 +212,12 @@ async function getVariableCollectionModes() {
     for (const col of localCols) {
       if (!col.modes || col.modes.length < 2) continue;
       if (col.key) seenCollectionKeys.add(col.key);
+      const widthVar = await findWidthVariable(col);
       for (const mode of col.modes) {
+        var modeValue = null;
+        if (widthVar) {
+          try { modeValue = await resolveVariableValueInMode(widthVar, mode.modeId); } catch (err) {}
+        }
         result.push({
           collectionId: col.id,
           collectionKey: col.key || null,
@@ -182,16 +225,14 @@ async function getVariableCollectionModes() {
           libraryName: 'Local',
           modeId: mode.modeId,
           modeName: mode.name,
+          value: modeValue,
           isLibrary: false,
         });
       }
     }
-  } catch (err) {
-    // Skip — no local collections accessible
-  }
+  } catch (err) {}
 
-  // Library collections (not yet imported). The team-library API doesn't expose modeIds
-  // directly, so we import one variable from the collection to surface the VariableCollection.
+  // Library collections
   try {
     const libCols = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
     for (const libCol of libCols) {
@@ -199,12 +240,16 @@ async function getVariableCollectionModes() {
       try {
         const libVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(libCol.key);
         if (!libVars.length) continue;
-        // Import the first variable — this also brings the collection into reach
         const imported = await figma.variables.importVariableByKeyAsync(libVars[0].key);
         if (!imported) continue;
         const col = await figma.variables.getVariableCollectionByIdAsync(imported.variableCollectionId);
         if (!col || !col.modes || col.modes.length < 2) continue;
+        const widthVar = await findWidthVariable(col);
         for (const mode of col.modes) {
+          var modeValue = null;
+          if (widthVar) {
+            try { modeValue = await resolveVariableValueInMode(widthVar, mode.modeId); } catch (err) {}
+          }
           result.push({
             collectionId: col.id,
             collectionKey: col.key || libCol.key || null,
@@ -212,16 +257,13 @@ async function getVariableCollectionModes() {
             libraryName: libCol.libraryName || 'Library',
             modeId: mode.modeId,
             modeName: mode.name,
+            value: modeValue,
             isLibrary: true,
           });
         }
-      } catch (err) {
-        // Skip any collection we can't import
-      }
+      } catch (err) {}
     }
-  } catch (err) {
-    // teamLibrary unavailable
-  }
+  } catch (err) {}
 
   return result;
 }
