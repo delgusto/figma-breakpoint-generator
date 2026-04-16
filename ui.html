@@ -1,0 +1,1538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Breakpoint Generator</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* Brand font — loaded from the user's locally-installed TTFs */
+    @font-face {
+      font-family: 'Beacon Sans';
+      font-weight: 400; font-style: normal;
+      src: local('CBABeaconSans-Regular'), local('CBABeaconSans Regular'), local('CBABeaconSans');
+    }
+    @font-face {
+      font-family: 'Beacon Sans';
+      font-weight: 400; font-style: italic;
+      src: local('CBABeaconSans-Italic'), local('CBABeaconSans Italic');
+    }
+    @font-face {
+      font-family: 'Beacon Sans';
+      font-weight: 700; font-style: normal;
+      src: local('CBABeaconSans-Bold'), local('CBABeaconSans Bold');
+    }
+    @font-face {
+      font-family: 'Beacon Sans';
+      font-weight: 700; font-style: italic;
+      src: local('CBABeaconSans-BoldItalic'), local('CBABeaconSans Bold Italic');
+    }
+    @font-face {
+      font-family: 'Beacon Sans';
+      font-weight: 800; font-style: normal;
+      src: local('CBABeaconSans-ExtraBold'), local('CBABeaconSans ExtraBold');
+    }
+
+    :root {
+      --bg:        #ffffff;
+      --surface:   #fafafa;
+      --surface2:  #f0f0f0;
+      --border:    rgba(0,0,0,0.1);
+      --border2:   rgba(0,0,0,0.06);
+      --text:      #000000;
+      --muted:     #525252;
+      --dim:       #8a8a8a;
+      --ink:       #000000;    /* primary CTA background */
+      --ink-text:  #ffffff;    /* text on top of --ink */
+      --accent:    #ffcc00;    /* reserved for the linked-variable badge */
+      --accent-a:  rgba(255,204,0,0.25);
+      --accent-ink:#000000;
+      --green:     #2f7a4c;
+      --green-a:   rgba(47,122,76,0.1);
+      --red:       #c43535;
+      --radius:    6px;
+      --radius-sm: 4px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Beacon Sans', 'CBABeaconSans', system-ui, -apple-system, sans-serif;
+      font-size: 12px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* ── Layout ── */
+    .panel { display: none; flex-direction: column; height: 100vh; }
+    .panel.active { display: flex; }
+
+    .panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 14px 10px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .panel-title {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+      text-transform: uppercase; color: var(--muted);
+    }
+
+    .panel-body {
+      flex: 1; overflow-y: auto; padding: 14px;
+    }
+    .panel-body::-webkit-scrollbar { width: 4px; }
+    .panel-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .panel-footer {
+      padding: 12px 14px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    /* ── Source card ── */
+    .source-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      margin-bottom: 16px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .source-card.empty { border-style: dashed; }
+    .source-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--ink); flex-shrink: 0;
+    }
+    .source-dot.empty { background: var(--dim); }
+    .source-name { font-size: 12px; font-weight: 500; color: var(--text); }
+    .source-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
+    .source-hint { font-size: 11px; color: var(--dim); }
+
+    /* ── Section label ── */
+    .section-label {
+      font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--dim);
+      margin-bottom: 8px; padding-bottom: 6px;
+      border-bottom: 1px solid var(--border2);
+    }
+
+    /* ── Breakpoint rows ── */
+    .bp-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 18px; }
+
+    .bp-row {
+      display: grid;
+      grid-template-columns: 28px 1fr 70px 24px;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border-radius: var(--radius-sm);
+      transition: background 0.12s;
+    }
+    .bp-row:hover { background: var(--surface2); }
+    .bp-row.disabled { opacity: 0.4; }
+
+    /* ── Settings bp rows (wider layout) ── */
+    .settings-bp-row {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px;
+      margin-bottom: 6px;
+      position: relative;
+      transition: opacity 0.12s;
+    }
+    .settings-bp-row.dragging { opacity: 0.4; }
+    .settings-bp-row.drop-before::before,
+    .settings-bp-row.drop-after::after {
+      content: '';
+      position: absolute; left: 0; right: 0;
+      height: 2px; background: var(--ink);
+      border-radius: 1px;
+    }
+    .settings-bp-row.drop-before::before { top: -4px; }
+    .settings-bp-row.drop-after::after  { bottom: -4px; }
+
+    .drag-handle {
+      cursor: grab;
+      color: var(--dim);
+      padding: 2px 4px;
+      display: inline-flex; align-items: center;
+      flex-shrink: 0;
+      user-select: none;
+    }
+    .drag-handle:hover { color: var(--text); }
+    .drag-handle:active { cursor: grabbing; }
+    .settings-bp-top {
+      display: grid; grid-template-columns: 16px 1fr 70px 24px; gap: 6px;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .settings-bp-var {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .settings-bp-remove {
+      background: transparent; border: none; color: var(--dim);
+      cursor: pointer; padding: 4px; border-radius: var(--radius-sm);
+      display: grid; place-items: center;
+      transition: color 0.12s, background 0.12s;
+    }
+    .settings-bp-remove:hover { color: var(--red); background: rgba(224,82,82,0.12); }
+    .settings-bp-remove svg { display: block; }
+    .var-badge {
+      font-size: 10px; color: var(--accent);
+      background: var(--accent-a); border-radius: 3px;
+      padding: 2px 6px; white-space: nowrap; flex-shrink: 0;
+    }
+
+    /* ── Inputs ── */
+    input[type="text"], input[type="number"], select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-family: inherit; font-size: 12px;
+      padding: 5px 8px;
+      outline: none;
+      width: 100%;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      -webkit-appearance: none;
+    }
+    input:focus, select:focus {
+      border-color: var(--ink);
+      box-shadow: 0 0 0 2px rgba(0,0,0,0.08);
+    }
+    input[type="number"] { font-variant-numeric: tabular-nums; }
+    select option { background: #2c2c2c; }
+    select { cursor: pointer; }
+
+    input[type="checkbox"] {
+      appearance: none; -webkit-appearance: none;
+      width: 14px; height: 14px; border-radius: 3px;
+      border: 1.5px solid var(--border);
+      background: var(--surface2);
+      cursor: pointer; flex-shrink: 0;
+      display: grid; place-items: center;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    input[type="checkbox"]:checked {
+      background: var(--ink); border-color: var(--ink);
+    }
+    input[type="checkbox"]:checked::after {
+      content: '';
+      width: 5px; height: 3px;
+      border-left: 1.5px solid var(--ink-text);
+      border-bottom: 1.5px solid var(--ink-text);
+      transform: rotate(-45deg) translateY(-1px);
+    }
+
+    label { cursor: pointer; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 6px;
+      border: none; border-radius: var(--radius);
+      font-family: inherit; font-size: 12px; font-weight: 500;
+      cursor: pointer; transition: opacity 0.15s, transform 0.1s;
+      padding: 8px 14px;
+      white-space: nowrap;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
+
+    .btn-primary {
+      background: var(--ink); color: var(--ink-text); width: 100%;
+      padding: 10px; font-size: 13px; font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+    .btn-primary:hover { opacity: 0.88; }
+
+    .btn-ghost {
+      background: transparent; color: var(--muted);
+      border: 1px solid var(--border);
+      padding: 6px 10px; font-size: 11px;
+    }
+    .btn-ghost:hover { color: var(--text); border-color: rgba(255,255,255,0.25); }
+
+    .btn-icon {
+      background: transparent; color: var(--dim); border: none;
+      padding: 4px; border-radius: var(--radius-sm);
+      cursor: pointer; display: grid; place-items: center;
+      transition: color 0.12s, background 0.12s;
+    }
+    .btn-icon:hover { color: var(--text); background: var(--surface2); }
+    .btn-icon svg { display: block; }
+
+    .btn-add {
+      width: 100%; background: var(--surface); border: 1px dashed var(--border);
+      color: var(--muted); border-radius: var(--radius);
+      padding: 8px; font-size: 11px; text-align: center; cursor: pointer;
+      transition: border-color 0.12s, color 0.12s, background 0.12s;
+      margin-bottom: 16px;
+    }
+    .btn-add:hover { border-color: var(--ink); color: var(--ink); background: var(--surface2); }
+
+    /* ── Row controls (main panel) ── */
+    .bp-label-cell { font-size: 12px; color: var(--text); user-select: none; }
+    .bp-width-cell { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; user-select: none; }
+
+    /* ── Settings rows ── */
+    .setting-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 0; border-bottom: 1px solid var(--border2);
+    }
+    .setting-row.stacked {
+      flex-direction: column; align-items: stretch; gap: 6px;
+    }
+    .setting-row.stacked .setting-control { width: 100%; }
+    .setting-row:last-child { border-bottom: none; }
+    .setting-label { font-size: 12px; color: var(--text); }
+    .setting-sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+    .setting-control { flex-shrink: 0; }
+
+    .gap-input { width: 60px; text-align: right; }
+
+    /* ── Status ── */
+    .status {
+      font-size: 11px; border-radius: var(--radius-sm);
+      padding: 8px 10px; margin-top: 10px;
+      display: none;
+    }
+    .status.success { background: var(--green-a); color: var(--green); display: block; }
+    .status.error   { background: rgba(224,82,82,0.12); color: var(--red); display: block; }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .tab {
+      flex: 1; padding: 9px 0; text-align: center;
+      font-size: 11px; font-weight: 500; color: var(--muted);
+      cursor: pointer; border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+      user-select: none;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--ink); border-bottom-color: var(--ink); }
+
+    /* ── Var tag inline ── */
+    .linked-tag {
+      font-size: 10px; background: var(--accent-a);
+      color: var(--accent); border-radius: 3px;
+      padding: 1px 5px; margin-left: 4px;
+    }
+
+    /* ── Integrated variable combobox ── */
+    .var-combobox {
+      position: relative;
+      width: 100%;
+    }
+    .var-combobox-input {
+      width: 100%;
+      padding-right: 26px; /* room for the caret/clear */
+      font-size: 11px;
+    }
+    .var-combobox-input.has-value {
+      color: var(--ink);
+      font-weight: 600;
+    }
+    .var-combobox-clear {
+      position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+      background: transparent; border: none; color: var(--dim);
+      cursor: pointer; padding: 2px; border-radius: 3px;
+      display: none; place-items: center; line-height: 0;
+    }
+    .var-combobox-clear:hover { color: var(--text); background: var(--surface2); }
+    .var-combobox.has-value .var-combobox-clear { display: grid; }
+    .var-combobox.open .var-combobox-popup { display: block; }
+
+    .var-combobox-popup {
+      display: none;
+      position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+      max-height: 280px; overflow-y: auto;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      z-index: 20;
+      padding: 4px 0;
+    }
+    .var-combobox-popup::-webkit-scrollbar { width: 4px; }
+    .var-combobox-popup::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .var-group-label {
+      font-size: 10px; color: var(--dim);
+      padding: 8px 10px 4px;
+      text-transform: uppercase; letter-spacing: 0.06em;
+      font-weight: 600;
+    }
+    .var-group-label:not(:first-child) {
+      border-top: 1px solid var(--border2);
+      margin-top: 4px;
+    }
+    .var-option {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; padding: 5px 10px;
+      cursor: pointer; font-size: 11px; color: var(--text);
+      user-select: none;
+    }
+    .var-option:hover, .var-option.active {
+      background: var(--surface2);
+    }
+    .var-option.selected {
+      color: var(--ink);
+      font-weight: 600;
+    }
+    .var-option.selected::before {
+      content: '';
+      width: 4px; height: 4px; border-radius: 50%;
+      background: var(--ink); flex-shrink: 0;
+    }
+    .var-option-none {
+      color: var(--muted);
+      font-style: italic;
+      border-bottom: 1px solid var(--border2);
+      margin-bottom: 4px;
+      padding-bottom: 6px;
+    }
+    .var-option-none.selected { font-style: normal; }
+    .var-option-none::before { display: none; } /* no dot on the "none" row */
+    .var-option-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .var-option-value {
+      font-size: 10px; color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+    .var-option-pill {
+      font-size: 9px; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--muted);
+      background: var(--surface2); padding: 1px 5px;
+      border-radius: 3px;
+    }
+    .var-combobox-empty {
+      padding: 12px 10px;
+      font-size: 11px; color: var(--dim);
+      text-align: center;
+    }
+
+    /* ── Separator ── */
+    hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+
+    /* ── Scrollbar ── */
+    * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  </style>
+</head>
+<body>
+
+  <!-- ══════════════════════════════════════
+       MAIN PANEL
+  ══════════════════════════════════════ -->
+  <div id="panel-main" class="panel active">
+
+    <div class="tabs">
+      <div class="tab active" data-tab="main">Generate</div>
+      <div class="tab" data-tab="settings">Settings</div>
+    </div>
+
+    <div class="panel-body">
+
+      <!-- Source frame -->
+      <div id="source-card" class="source-card empty">
+        <div id="source-dot" class="source-dot empty"></div>
+        <div>
+          <div id="source-name" class="source-hint">Select a frame, component or instance</div>
+          <div id="source-meta" class="source-meta" style="display:none;"></div>
+        </div>
+      </div>
+
+      <!-- Breakpoints -->
+      <div class="section-label">Breakpoints</div>
+      <div id="bp-list" class="bp-list"></div>
+
+      <!-- Status -->
+      <div id="status" class="status"></div>
+
+    </div>
+
+    <div class="panel-footer">
+      <button id="generate-btn" class="btn btn-primary" disabled>
+        Generate breakpoints
+      </button>
+    </div>
+
+  </div>
+
+  <!-- ══════════════════════════════════════
+       SETTINGS PANEL
+  ══════════════════════════════════════ -->
+  <div id="panel-settings" class="panel">
+
+    <div class="tabs">
+      <div class="tab" data-tab="main">Generate</div>
+      <div class="tab active" data-tab="settings">Settings</div>
+    </div>
+
+    <div class="panel-body">
+
+      <!-- Breakpoints editor -->
+      <div class="section-label">Breakpoints</div>
+      <div id="settings-bp-list"></div>
+      <button class="btn-add" id="add-bp-btn">+ Add breakpoint</button>
+
+      <!-- Layout settings -->
+      <div class="section-label">Layout</div>
+      <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 2px 12px;">
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Gap between frames</div>
+          </div>
+          <div class="setting-control">
+            <input type="number" id="gap-input" class="gap-input" value="120" min="0" max="1000" step="8" />
+          </div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Add labels above frames</div>
+            <div class="setting-sub">Breakpoint name &amp; width in px</div>
+          </div>
+          <div class="setting-control">
+            <input type="checkbox" id="labels-toggle" checked />
+          </div>
+        </div>
+      </div>
+
+      <hr />
+
+      <!-- Defaults -->
+      <div class="section-label">Defaults</div>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-bottom:6px;">
+        <button class="btn btn-ghost" id="save-defaults-btn">Save current as defaults</button>
+        <button class="btn btn-ghost" id="load-defaults-btn">Load my defaults</button>
+      </div>
+      <p id="defaults-hint" style="font-size:11px; color:var(--dim); margin-bottom:14px;">
+        Your defaults are used when you reset, and can be loaded into any file.
+      </p>
+
+      <hr />
+
+      <!-- Token library preference -->
+      <div class="section-label">Token library</div>
+      <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 2px 12px; margin-bottom:8px;">
+        <div class="setting-row stacked">
+          <div>
+            <div class="setting-label">Preferred library</div>
+            <div class="setting-sub">Pinned to the top of the picker</div>
+          </div>
+          <div class="setting-control">
+            <select id="preferred-library" style="width:100%; text-overflow:ellipsis;"></select>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Only show this library</div>
+            <div class="setting-sub">Hide tokens from other libraries</div>
+          </div>
+          <div class="setting-control">
+            <input type="checkbox" id="filter-to-library" />
+          </div>
+        </div>
+      </div>
+
+      <hr />
+
+      <!-- Variable options info -->
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+        <div class="section-label" style="margin-bottom:0; border:none; padding:0;">File variables</div>
+        <button class="btn-ghost" id="refresh-vars-btn" style="padding:4px 8px; font-size:10px;">Refresh</button>
+      </div>
+      <p id="var-hint" style="font-size:11px; color:var(--dim); margin-bottom:14px;">
+        WIDTH-scoped variables from this file and linked libraries appear in the breakpoint dropdowns above.
+      </p>
+
+      <hr />
+
+      <button class="btn btn-ghost" id="reset-btn" style="width:100%; color:var(--red); border-color:rgba(224,82,82,0.3);">
+        Reset to defaults
+      </button>
+
+    </div>
+
+    <div class="panel-footer">
+      <button id="save-btn" class="btn btn-primary">Save settings</button>
+    </div>
+
+  </div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+
+let state = {
+  source: null,
+  breakpoints: [],
+  settings: { gap: 120, addLabels: true },
+  variableOptions: [],
+  modeOptions: [],           // Every (collection, mode) pair from collections with >1 mode
+  defaultBreakpoints: null,  // User-saved baseline (null until they save one)
+  preferredLibrary: null,    // Library name to pin to top of the dropdown
+  filterToLibrary: false,    // When true, hide libraries other than preferredLibrary
+};
+
+// ─── Messaging ────────────────────────────────────────────────────────────────
+
+function send(msg) {
+  parent.postMessage({ pluginMessage: msg }, '*');
+}
+
+window.onmessage = (event) => {
+  const msg = event.data.pluginMessage;
+  if (!msg) return;
+
+  switch (msg.type) {
+    case 'init':
+      state.breakpoints = msg.breakpoints;
+      state.settings = msg.settings;
+      state.variableOptions = msg.variableOptions || [];
+      state.modeOptions = msg.modeOptions || [];
+      state.defaultBreakpoints = msg.defaultBreakpoints || null;
+      state.preferredLibrary = msg.preferredLibrary || null;
+      state.filterToLibrary = !!msg.filterToLibrary;
+      renderAll();
+      break;
+
+    case 'selection':
+      state.source = msg.source;
+      renderSource();
+      updateGenerateBtn();
+      break;
+
+    case 'variables':
+      state.variableOptions = msg.variableOptions || [];
+      state.modeOptions = msg.modeOptions || [];
+      renderSettingsBpList();
+      renderSettings(); // refresh var-hint + library picker list
+      document.getElementById('var-hint').textContent =
+        (state.variableOptions.length || state.modeOptions.length)
+          ? `${state.variableOptions.length} variable${state.variableOptions.length !== 1 ? 's' : ''}, ${state.modeOptions.length} mode${state.modeOptions.length !== 1 ? 's' : ''}.`
+          : 'No WIDTH-scoped variables or multi-mode collections found.';
+      break;
+
+    case 'var-error':
+      document.getElementById('var-hint').textContent = '⚠ ' + msg.message;
+      document.getElementById('var-hint').style.color = 'var(--red)';
+      break;
+
+    case 'done':
+      showStatus(`✓ ${msg.count} breakpoint${msg.count !== 1 ? 's' : ''} generated`, 'success');
+      setGenerateLoading(false);
+      break;
+
+    case 'error':
+      showStatus(msg.message, 'error');
+      setGenerateLoading(false);
+      break;
+  }
+};
+
+// ─── Tab switching ────────────────────────────────────────────────────────────
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const target = tab.dataset.tab;
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === target));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.getElementById(`panel-${target}`).classList.add('active');
+    if (target === 'settings') renderSettingsBpList();
+  });
+});
+
+// ─── Render: source card ──────────────────────────────────────────────────────
+
+function renderSource() {
+  const card = document.getElementById('source-card');
+  const dot  = document.getElementById('source-dot');
+  const name = document.getElementById('source-name');
+  const meta = document.getElementById('source-meta');
+
+  if (state.source) {
+    card.classList.remove('empty');
+    dot.classList.remove('empty');
+    name.className = 'source-name';
+    name.textContent = state.source.name;
+    meta.style.display = 'block';
+    const typeLabel = { FRAME: 'Frame', INSTANCE: 'Instance', COMPONENT: 'Component' }[state.source.type] || state.source.type;
+    meta.textContent = `${typeLabel} · ${state.source.width} × ${state.source.height}px${state.source.hasAutoLayout ? ' · auto-layout' : ''}`;
+  } else {
+    card.classList.add('empty');
+    dot.classList.add('empty');
+    name.className = 'source-hint';
+    name.textContent = 'Select a frame, component or instance';
+    meta.style.display = 'none';
+  }
+}
+
+// ─── Render: main breakpoint list ─────────────────────────────────────────────
+
+function renderBpList() {
+  const list = document.getElementById('bp-list');
+  list.innerHTML = '';
+
+  state.breakpoints.forEach((bp, i) => {
+    const row = document.createElement('div');
+    row.className = 'bp-row' + (bp.enabled ? '' : ' disabled');
+
+    const link = getSelectedLink(bp);
+    let widthDisplay, tag = '';
+    if (link && link.kind === 'variable') {
+      widthDisplay = link.value !== null ? `~${link.value}px` : 'library';
+      tag = link.isLibrary ? 'lib' : 'var';
+    } else if (link && link.kind === 'mode') {
+      widthDisplay = link.modeName;
+      tag = 'mode';
+    } else {
+      widthDisplay = `${bp.width}px`;
+    }
+
+    row.innerHTML = `
+      <label style="display:contents; cursor:pointer;">
+        <input type="checkbox" class="bp-toggle" data-index="${i}" ${bp.enabled ? 'checked' : ''} />
+        <span class="bp-label-cell">
+          ${escHtml(bp.label)}
+          ${tag ? `<span class="linked-tag">${tag}</span>` : ''}
+        </span>
+        <span class="bp-width-cell" style="text-align:right;">${escHtml(widthDisplay)}</span>
+      </label>
+      <span></span>
+    `;
+
+    list.appendChild(row);
+  });
+
+  list.querySelectorAll('.bp-toggle').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      const i = parseInt(e.target.dataset.index);
+      state.breakpoints[i].enabled = e.target.checked;
+      e.target.closest('.bp-row').classList.toggle('disabled', !e.target.checked);
+      updateGenerateBtn();
+      // Auto-save toggle changes
+      send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+    });
+  });
+}
+
+// ─── Render: settings breakpoint editor ──────────────────────────────────────
+
+function renderSettingsBpList() {
+  const list = document.getElementById('settings-bp-list');
+  list.innerHTML = '';
+
+  state.breakpoints.forEach((bp, i) => {
+    const card = document.createElement('div');
+    card.className = 'settings-bp-row';
+
+    const selected = getSelectedLink(bp);
+    const displayText = linkDisplayText(selected);
+
+    // Disable width only if the linked *variable* actually resolves. Mode-linked
+    // breakpoints don't produce a numeric width inside the plugin — the width
+    // field stays editable as a fallback value if the source isn't bound.
+    const linked = !!selected && selected.kind === 'variable';
+
+    card.innerHTML = `
+      <div class="settings-bp-top">
+        <span class="drag-handle" draggable="true" data-index="${i}" title="Drag to reorder">
+          <svg width="10" height="12" viewBox="0 0 10 12" fill="none">
+            <circle cx="2" cy="2" r="1" fill="currentColor"/>
+            <circle cx="8" cy="2" r="1" fill="currentColor"/>
+            <circle cx="2" cy="6" r="1" fill="currentColor"/>
+            <circle cx="8" cy="6" r="1" fill="currentColor"/>
+            <circle cx="2" cy="10" r="1" fill="currentColor"/>
+            <circle cx="8" cy="10" r="1" fill="currentColor"/>
+          </svg>
+        </span>
+        <input type="text" class="bp-name-input" data-index="${i}" value="${escHtml(bp.label)}" placeholder="Breakpoint name" />
+        <input type="number" class="bp-width-input" data-index="${i}" value="${bp.width}" min="1" max="9999" placeholder="px"
+          ${linked ? 'disabled style="opacity:0.4;"' : ''} />
+        <button class="settings-bp-remove remove-bp-btn" data-index="${i}" title="Remove breakpoint">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M2 10L10 2M2 2l8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <div class="var-combobox ${selected ? 'has-value' : ''}" data-index="${i}">
+        <input type="text" class="var-combobox-input ${selected ? 'has-value' : ''}" data-index="${i}"
+          placeholder="Link to variable…" value="${escHtml(displayText)}" autocomplete="off" />
+        <button type="button" class="var-combobox-clear" data-index="${i}" title="Unlink variable">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <path d="M2 8L8 2M2 2l6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <div class="var-combobox-popup" data-index="${i}"></div>
+      </div>
+    `;
+
+    list.appendChild(card);
+  });
+
+  // Events
+  list.querySelectorAll('.bp-name-input').forEach(el => {
+    el.addEventListener('input', e => {
+      state.breakpoints[parseInt(e.target.dataset.index)].label = e.target.value;
+    });
+  });
+
+  list.querySelectorAll('.bp-width-input').forEach(el => {
+    el.addEventListener('input', e => {
+      const val = parseInt(e.target.value);
+      if (!isNaN(val) && val > 0) {
+        state.breakpoints[parseInt(e.target.dataset.index)].width = val;
+      }
+    });
+  });
+
+  // Wire each combobox
+  list.querySelectorAll('.var-combobox').forEach(el => {
+    const i = parseInt(el.dataset.index);
+    wireCombobox(el, i);
+  });
+
+  list.querySelectorAll('.remove-bp-btn').forEach(el => {
+    el.addEventListener('click', e => {
+      const i = parseInt(e.currentTarget.dataset.index);
+      state.breakpoints.splice(i, 1);
+      renderSettingsBpList();
+      renderBpList();
+    });
+  });
+
+  // ─── Drag-to-reorder ─────────────────────────────────────────────────
+  wireDragReorder(list);
+}
+
+// Track the index being dragged across event handlers (dataTransfer in setData
+// isn't readable during dragover on all browsers).
+let dragSrcIndex = null;
+
+function wireDragReorder(list) {
+  // dragstart — only on drag handles, so dragging other elements doesn't pick up
+  list.querySelectorAll('.drag-handle').forEach(handle => {
+    handle.addEventListener('dragstart', e => {
+      dragSrcIndex = parseInt(handle.dataset.index);
+      e.dataTransfer.effectAllowed = 'move';
+      // Firefox requires data to be set for the drag to start
+      try { e.dataTransfer.setData('text/plain', String(dragSrcIndex)); } catch (err) {}
+      handle.closest('.settings-bp-row').classList.add('dragging');
+    });
+    handle.addEventListener('dragend', () => {
+      list.querySelectorAll('.settings-bp-row').forEach(card => {
+        card.classList.remove('dragging', 'drop-before', 'drop-after');
+      });
+      dragSrcIndex = null;
+    });
+  });
+
+  // dragover — determine drop position, show indicator
+  list.addEventListener('dragover', e => {
+    if (dragSrcIndex === null) return;
+    const card = e.target.closest('.settings-bp-row');
+    if (!card || !list.contains(card)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = card.getBoundingClientRect();
+    const before = e.clientY < rect.top + rect.height / 2;
+    list.querySelectorAll('.drop-before, .drop-after').forEach(c => {
+      c.classList.remove('drop-before', 'drop-after');
+    });
+    card.classList.add(before ? 'drop-before' : 'drop-after');
+  });
+
+  list.addEventListener('dragleave', e => {
+    // Only clear if leaving the list entirely, not just moving between rows
+    if (!list.contains(e.relatedTarget)) {
+      list.querySelectorAll('.drop-before, .drop-after').forEach(c => {
+        c.classList.remove('drop-before', 'drop-after');
+      });
+    }
+  });
+
+  // drop — reorder state.breakpoints, persist, re-render
+  list.addEventListener('drop', e => {
+    if (dragSrcIndex === null) return;
+    const card = e.target.closest('.settings-bp-row');
+    if (!card) return;
+    e.preventDefault();
+    const targetIdx = parseInt(card.dataset.index);
+    const rect = card.getBoundingClientRect();
+    const insertAfter = e.clientY >= rect.top + rect.height / 2;
+
+    const srcIdx = dragSrcIndex;
+    if (srcIdx === targetIdx && !insertAfter) return;
+    if (srcIdx === targetIdx && insertAfter) return;
+
+    // Splice out the source, then compute the correct insertion index.
+    const items = state.breakpoints.slice();
+    const [moved] = items.splice(srcIdx, 1);
+    // After removing, indices past srcIdx shift down by 1.
+    let dst = targetIdx;
+    if (dst > srcIdx) dst -= 1;
+    if (insertAfter) dst += 1;
+    dst = Math.max(0, Math.min(items.length, dst));
+    items.splice(dst, 0, moved);
+    state.breakpoints = items;
+
+    send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+    renderSettingsBpList();
+    renderBpList();
+    updateGenerateBtn();
+  });
+}
+
+// ─── Variable combobox ────────────────────────────────────────────────────────
+
+// Look up the currently-linked variable object for a given breakpoint, if any
+function getSelectedVariable(bp) {
+  if (!bp) return null;
+  if (bp.variableId) return state.variableOptions.find(v => v.id === bp.variableId) || null;
+  if (bp.variableKey) return state.variableOptions.find(v => v.key === bp.variableKey) || null;
+  return null;
+}
+
+// Look up the currently-linked mode entry for a given breakpoint, if any
+function getSelectedMode(bp) {
+  if (!bp || !bp.modeId) return null;
+  return (state.modeOptions || []).find(m => {
+    if (m.modeId !== bp.modeId) return false;
+    if (bp.modeCollectionKey && m.collectionKey === bp.modeCollectionKey) return true;
+    if (bp.modeCollectionId && m.collectionId === bp.modeCollectionId) return true;
+    return false;
+  }) || null;
+}
+
+// Unified "what's this breakpoint linked to?" — returns a tagged union or null.
+function getSelectedLink(bp) {
+  const v = getSelectedVariable(bp);
+  if (v) return Object.assign({ kind: 'variable' }, v);
+  const m = getSelectedMode(bp);
+  if (m) return Object.assign({ kind: 'mode' }, m);
+  return null;
+}
+
+// Text shown in the combobox input when a link is selected
+function linkDisplayText(link) {
+  if (!link) return '';
+  if (link.kind === 'mode') {
+    return `${link.collectionName} / ${link.modeName}`;
+  }
+  const v = link; // variable
+  return `${leafName(v.name)}${v.value !== null ? ' (' + v.value + 'px)' : ''}`;
+}
+
+function leafName(name) {
+  const [, leaf] = splitNamePath(name);
+  return leaf;
+}
+
+// Score a mode entry for relevance. Modes are the primary breakpoint signal in
+// the user's workflow, so they get a baseline +2 and an extra +1 if the mode
+// name matches common breakpoint words.
+function scoreMode(m) {
+  let score = 2;
+  const n = (m.modeName || '').toLowerCase();
+  if (BP_KEYWORDS.some(k => n.includes(k))) score += 1;
+  // Common size abbreviations used for breakpoints
+  if (['xs','sm','md','lg','xl','2xl','s','m','l'].includes(n)) score += 1;
+  return score;
+}
+
+// Encode a link option as the data-value string. Parsed by applySelection.
+// Note: mode values use `|` as the delimiter because Figma's collectionId and modeId
+// themselves contain `:` (e.g. "VariableCollectionId:1:2", "1:0"). A `:`-split would
+// mangle them.
+function encodeLinkValue(item) {
+  if (item.kind === 'mode') {
+    const key = item.collectionKey || 'local';
+    const id = item.collectionId || '';
+    return `mode|${key}|${id}|${item.modeId}`;
+  }
+  return item.id ? `local:${item.id}` : `library:${item.key}`;
+}
+
+function isSelectedItem(item, bp) {
+  if (item.kind === 'mode') {
+    if (bp.modeId !== item.modeId) return false;
+    if (item.collectionKey && bp.modeCollectionKey === item.collectionKey) return true;
+    if (item.collectionId && bp.modeCollectionId === item.collectionId) return true;
+    return false;
+  }
+  return (item.id && bp.variableId === item.id) || (item.key && bp.variableKey === item.key);
+}
+
+function itemScore(item) {
+  return item.kind === 'mode' ? scoreMode(item) : scoreVariable(item);
+}
+
+// Build the combined mode+variable popup HTML. Options are grouped by their
+// library+collection; modes cluster under `${lib} / ${collection} · modes`.
+function buildComboboxPopup(variables, bp, filter) {
+  const f = (filter || '').trim().toLowerCase();
+  const preferred = state.preferredLibrary;
+  const limitToPreferred = state.filterToLibrary && !!preferred;
+
+  const passesLibFilter = (libName) => {
+    if (!limitToPreferred) return true;
+    return libName === preferred || libName === 'Local';
+  };
+
+  // Variables
+  const varMatches = variables.filter(v => {
+    const libName = v.libraryName || (v.isLibrary ? 'Library' : 'Local');
+    if (!passesLibFilter(libName)) return false;
+    if (!f) return true;
+    const hay = [libName, v.collection, v.name, v.value != null ? v.value + 'px' : ''].join(' ').toLowerCase();
+    return hay.includes(f);
+  }).map(v => Object.assign({ kind: 'variable' }, v));
+
+  // Modes
+  const modeMatches = (state.modeOptions || []).filter(m => {
+    const libName = m.libraryName || (m.isLibrary ? 'Library' : 'Local');
+    if (!passesLibFilter(libName)) return false;
+    if (!f) return true;
+    const hay = [libName, m.collectionName, m.modeName, 'mode'].join(' ').toLowerCase();
+    return hay.includes(f);
+  }).map(m => Object.assign({ kind: 'mode' }, m));
+
+  const allItems = varMatches.concat(modeMatches);
+
+  // "No variable" option — shown when there's a linked variable/mode, or when filter matches "no"/"none"/etc.
+  const hasLinked = !!(bp.variableId || bp.variableKey || bp.modeId);
+  const noneMatchesFilter = !f || 'no variable none unlink clear'.includes(f);
+  const noneOption = (hasLinked || noneMatchesFilter)
+    ? `<div class="var-option var-option-none ${!hasLinked ? 'selected' : ''}" data-value="" role="option">
+         <span class="var-option-name">No variable</span>
+       </div>`
+    : '';
+
+  if (!allItems.length && !noneOption) {
+    return `<div class="var-combobox-empty">No matches</div>`;
+  }
+  if (!allItems.length) {
+    return noneOption;
+  }
+
+  // Group by `${library} / ${collection} / ${namePrefix}` for variables,
+  // `${library} / ${collection} · modes` for modes.
+  const groups = new Map();
+  for (const item of allItems) {
+    let lib, key;
+    if (item.kind === 'mode') {
+      lib = item.libraryName || (item.isLibrary ? 'Library' : 'Local');
+      key = `${lib} / ${item.collectionName} · modes`;
+    } else {
+      lib = item.libraryName || (item.isLibrary ? 'Library' : 'Local');
+      const collection = item.collection || '(no collection)';
+      const [prefix] = splitNamePath(item.name);
+      key = prefix ? `${lib} / ${collection} / ${prefix}` : `${lib} / ${collection}`;
+    }
+    if (!groups.has(key)) groups.set(key, { lib, items: [] });
+    groups.get(key).items.push(item);
+  }
+
+  // Sort items within each group
+  for (const { items } of groups.values()) {
+    items.sort((a, b) => {
+      const sa = itemScore(a), sb = itemScore(b);
+      if (sb !== sa) return sb - sa;
+      if (a.kind === 'mode' && b.kind === 'mode') {
+        return String(a.modeName).localeCompare(String(b.modeName));
+      }
+      const va = a.value == null ? Infinity : a.value;
+      const vb = b.value == null ? Infinity : b.value;
+      if (va !== vb) return va - vb;
+      return String(a.name || a.modeName).localeCompare(String(b.name || b.modeName));
+    });
+  }
+
+  // Sort groups — preferred library first, Local second, then relevance + alpha.
+  // Modes groups bubble above variable groups within the same library/collection
+  // since they score higher on average.
+  const groupEntries = Array.from(groups.entries()).sort(([kA, gA], [kB, gB]) => {
+    const aIsPreferred = preferred && gA.lib === preferred;
+    const bIsPreferred = preferred && gB.lib === preferred;
+    if (aIsPreferred !== bIsPreferred) return aIsPreferred ? -1 : 1;
+    const aIsLocal = gA.lib === 'Local';
+    const bIsLocal = gB.lib === 'Local';
+    if (aIsLocal !== bIsLocal) return aIsLocal ? -1 : 1;
+    const maxA = Math.max(...gA.items.map(itemScore));
+    const maxB = Math.max(...gB.items.map(itemScore));
+    if (maxB !== maxA) return maxB - maxA;
+    return kA.localeCompare(kB);
+  });
+
+  const groupsHtml = groupEntries.map(([label, { items }]) => {
+    const opts = items.map(item => {
+      const optValue = encodeLinkValue(item);
+      const isSel = isSelectedItem(item, bp);
+      let nameHtml, valueHtml;
+      if (item.kind === 'mode') {
+        nameHtml = escHtml(item.modeName);
+        valueHtml = '<span class="var-option-pill">mode</span>';
+      } else {
+        nameHtml = escHtml(leafName(item.name));
+        valueHtml = item.value !== null ? `${item.value}px` : '—';
+      }
+      return `<div class="var-option ${isSel ? 'selected' : ''}" data-value="${escHtml(optValue)}" role="option">
+        <span class="var-option-name">${nameHtml}</span>
+        <span class="var-option-value">${valueHtml}</span>
+      </div>`;
+    }).join('');
+    return `<div class="var-group-label">${escHtml(label)}</div>${opts}`;
+  }).join('');
+
+  return noneOption + groupsHtml;
+}
+
+function wireCombobox(wrap, i) {
+  const input = wrap.querySelector('.var-combobox-input');
+  const popup = wrap.querySelector('.var-combobox-popup');
+  const clearBtn = wrap.querySelector('.var-combobox-clear');
+  const widthInput = document.querySelector(`.bp-width-input[data-index="${i}"]`);
+
+  let activeIndex = -1;   // highlighted option in popup (keyboard nav)
+  let justOpened = false; // used to blank the input on focus-open
+
+  const openPopup = (filter) => {
+    closeAllCombos(wrap);
+    const bp = state.breakpoints[i];
+    popup.innerHTML = buildComboboxPopup(state.variableOptions, bp, filter || '');
+    wrap.classList.add('open');
+    activeIndex = -1;
+  };
+
+  const closePopup = () => {
+    wrap.classList.remove('open');
+    popup.innerHTML = '';
+    activeIndex = -1;
+    // Restore display text from current link (variable or mode)
+    input.value = linkDisplayText(getSelectedLink(state.breakpoints[i]));
+  };
+
+  const applySelection = (rawValue) => {
+    const bp = state.breakpoints[i];
+    // Always clear both branches first, then set the one the user picked
+    bp.variableId = null;
+    bp.variableKey = null;
+    bp.modeCollectionKey = null;
+    bp.modeCollectionId = null;
+    bp.modeId = null;
+
+    if (!rawValue) {
+      // "No variable" — leave everything cleared
+    } else if (rawValue.startsWith('local:')) {
+      bp.variableId = rawValue.slice(6);
+      const v = state.variableOptions.find(v => v.id === bp.variableId);
+      if (v && v.value !== null && widthInput) widthInput.value = v.value;
+    } else if (rawValue.startsWith('library:')) {
+      bp.variableKey = rawValue.slice(8);
+    } else if (rawValue.startsWith('mode|')) {
+      // mode|<key or 'local'>|<collectionId or ''>|<modeId>
+      // Using `|` because collectionId and modeId can contain `:` internally.
+      const parts = rawValue.split('|');
+      const keyOrLocal = parts[1];
+      const id = parts[2];
+      const modeId = parts.slice(3).join('|'); // be tolerant if modeId ever contains `|`
+      bp.modeCollectionKey = keyOrLocal === 'local' ? null : keyOrLocal;
+      bp.modeCollectionId = id || null;
+      bp.modeId = modeId;
+    }
+
+    // Width input stays editable unless a *variable* is linked and resolves.
+    // For mode links the user may want to keep a fallback width typed here.
+    const resolved = getSelectedLink(bp);
+    const varLinked = !!resolved && resolved.kind === 'variable';
+    if (widthInput) {
+      widthInput.disabled = varLinked;
+      widthInput.style.opacity = varLinked ? '0.4' : '1';
+    }
+    const anyLink = !!resolved;
+    wrap.classList.toggle('has-value', anyLink);
+    input.classList.toggle('has-value', anyLink);
+    closePopup();
+  };
+
+  // Focus: clear display and show full list
+  input.addEventListener('focus', () => {
+    justOpened = true;
+    input.value = '';
+    openPopup('');
+    // allow the click-outside handler to ignore this focus tick
+    setTimeout(() => { justOpened = false; }, 0);
+  });
+
+  // Typing: filter live
+  input.addEventListener('input', e => {
+    openPopup(e.target.value);
+  });
+
+  // Keyboard
+  input.addEventListener('keydown', e => {
+    const opts = popup.querySelectorAll('.var-option');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (!wrap.classList.contains('open')) { openPopup(''); return; }
+      activeIndex = Math.min(activeIndex + 1, opts.length - 1);
+      highlightOption(opts, activeIndex);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      activeIndex = Math.max(activeIndex - 1, 0);
+      highlightOption(opts, activeIndex);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (activeIndex >= 0 && opts[activeIndex]) {
+        applySelection(opts[activeIndex].dataset.value);
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      input.blur();
+      closePopup();
+    }
+  });
+
+  // Click on an option
+  popup.addEventListener('click', e => {
+    const opt = e.target.closest('.var-option');
+    if (!opt) return;
+    applySelection(opt.dataset.value);
+  });
+
+  // Clear button
+  clearBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    applySelection('');
+    input.focus();
+  });
+
+  // Mousedown on popup shouldn't blur the input (would close before click fires)
+  popup.addEventListener('mousedown', e => e.preventDefault());
+}
+
+function highlightOption(opts, idx) {
+  opts.forEach(o => o.classList.remove('active'));
+  const el = opts[idx];
+  if (el) {
+    el.classList.add('active');
+    el.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function closeAllCombos(except) {
+  document.querySelectorAll('.var-combobox.open').forEach(el => {
+    if (el === except) return;
+    el.classList.remove('open');
+    const pop = el.querySelector('.var-combobox-popup');
+    if (pop) pop.innerHTML = '';
+    const i = parseInt(el.dataset.index);
+    const input = el.querySelector('.var-combobox-input');
+    if (input) input.value = linkDisplayText(getSelectedLink(state.breakpoints[i]));
+  });
+}
+
+// Click outside any combobox → close it
+document.addEventListener('mousedown', e => {
+  if (!e.target.closest('.var-combobox')) closeAllCombos(null);
+});
+
+// ─── Render: settings controls ────────────────────────────────────────────────
+
+function renderSettings() {
+  document.getElementById('gap-input').value = state.settings.gap ?? 120;
+  document.getElementById('labels-toggle').checked = state.settings.addLabels !== false;
+
+  const varCount = state.variableOptions.length;
+  const modeCount = state.modeOptions.length;
+  document.getElementById('var-hint').textContent = (varCount || modeCount)
+    ? `${varCount} variable${varCount !== 1 ? 's' : ''}, ${modeCount} mode${modeCount !== 1 ? 's' : ''}.`
+    : 'No WIDTH-scoped variables or multi-mode collections found.';
+
+  // Defaults section: enable/disable "Load my defaults" based on whether any are saved
+  const loadBtn = document.getElementById('load-defaults-btn');
+  const hasDefaults = Array.isArray(state.defaultBreakpoints) && state.defaultBreakpoints.length > 0;
+  loadBtn.disabled = !hasDefaults;
+  loadBtn.style.opacity = hasDefaults ? '1' : '0.4';
+  loadBtn.style.cursor = hasDefaults ? 'pointer' : 'default';
+  document.getElementById('defaults-hint').textContent = hasDefaults
+    ? `Defaults saved (${state.defaultBreakpoints.length} breakpoint${state.defaultBreakpoints.length !== 1 ? 's' : ''}). Used when you reset, and can be loaded into any file.`
+    : 'Save your current breakpoints as your baseline. They\u2019re used on reset, and can be loaded into any file.';
+
+  // Token library section: populate preferred-library <select> from available libraries
+  // (derived from both variable sources and mode sources).
+  const preferredSelect = document.getElementById('preferred-library');
+  const libraries = Array.from(new Set([
+    ...state.variableOptions.map(v => v.libraryName || (v.isLibrary ? 'Library' : 'Local')),
+    ...state.modeOptions.map(m => m.libraryName || (m.isLibrary ? 'Library' : 'Local')),
+  ]));
+  // Sort: Local first, then alpha
+  libraries.sort((a, b) => {
+    if (a === 'Local') return -1;
+    if (b === 'Local') return 1;
+    return a.localeCompare(b);
+  });
+  const currentPref = state.preferredLibrary || '';
+  // Truncate long library names in option labels so the <select> popup doesn't
+  // stretch off-panel. The `value` keeps the full name; only the display text is clipped.
+  const truncate = (s, n) => (s && s.length > n) ? s.slice(0, n - 1) + '\u2026' : s;
+  preferredSelect.innerHTML = `<option value="">All libraries</option>` +
+    libraries.map(lib => {
+      const short = truncate(lib, 22);
+      const title = lib !== short ? ` title="${escHtml(lib)}"` : '';
+      return `<option value="${escHtml(lib)}"${title} ${lib === currentPref ? 'selected' : ''}>${escHtml(short)}</option>`;
+    }).join('');
+
+  const filterToggle = document.getElementById('filter-to-library');
+  filterToggle.checked = !!state.filterToLibrary;
+  // Filter-toggle only makes sense when a specific library is chosen
+  const filterDisabled = !currentPref;
+  filterToggle.disabled = filterDisabled;
+  filterToggle.parentElement.style.opacity = filterDisabled ? '0.5' : '1';
+}
+
+function renderAll() {
+  renderSource();
+  renderBpList();
+  renderSettings();
+  updateGenerateBtn();
+}
+
+// ─── Generate button state ────────────────────────────────────────────────────
+
+function updateGenerateBtn() {
+  const btn = document.getElementById('generate-btn');
+  const hasSource = !!state.source;
+  const hasEnabled = state.breakpoints.some(bp => bp.enabled);
+  btn.disabled = !hasSource || !hasEnabled;
+}
+
+function setGenerateLoading(loading) {
+  const btn = document.getElementById('generate-btn');
+  btn.disabled = loading;
+  btn.textContent = loading ? 'Generating…' : 'Generate breakpoints';
+}
+
+// ─── Status ───────────────────────────────────────────────────────────────────
+
+let statusTimer;
+function showStatus(msg, type) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = `status ${type}`;
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => { el.className = 'status'; }, 4000);
+}
+
+// ─── Button handlers ──────────────────────────────────────────────────────────
+
+document.getElementById('generate-btn').addEventListener('click', () => {
+  if (!state.source) return;
+  const enabled = state.breakpoints.filter(bp => bp.enabled);
+  if (enabled.length === 0) { showStatus('Enable at least one breakpoint.', 'error'); return; }
+  setGenerateLoading(true);
+  clearTimeout(statusTimer);
+  document.getElementById('status').className = 'status';
+  send({
+    type: 'generate',
+    payload: {
+      sourceId: state.source.id,
+      breakpoints: state.breakpoints,
+      settings: state.settings,
+    },
+  });
+});
+
+document.getElementById('save-btn').addEventListener('click', () => {
+  state.settings.gap = parseInt(document.getElementById('gap-input').value) || 120;
+  state.settings.addLabels = document.getElementById('labels-toggle').checked;
+  send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+  // Sync back to main panel
+  renderBpList();
+  updateGenerateBtn();
+  // Switch to main panel
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'main'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-main').classList.add('active');
+});
+
+document.getElementById('reset-btn').addEventListener('click', () => {
+  const hasUserDefaults = Array.isArray(state.defaultBreakpoints) && state.defaultBreakpoints.length > 0;
+  const msg = hasUserDefaults
+    ? 'Reset breakpoints to your saved defaults?'
+    : 'Reset all breakpoints and settings to factory defaults?';
+  if (!confirm(msg)) return;
+  send({ type: 'reset-settings' });
+});
+
+document.getElementById('refresh-vars-btn').addEventListener('click', () => {
+  send({ type: 'refresh-variables' });
+});
+
+// Save current breakpoints as the user's personal baseline
+document.getElementById('save-defaults-btn').addEventListener('click', () => {
+  // Deep-clone so future edits don't mutate the saved snapshot
+  state.defaultBreakpoints = JSON.parse(JSON.stringify(state.breakpoints));
+  send({ type: 'save-defaults', breakpoints: state.defaultBreakpoints });
+  showStatus(`\u2713 Defaults saved (${state.defaultBreakpoints.length} breakpoint${state.defaultBreakpoints.length !== 1 ? 's' : ''})`, 'success');
+  renderSettings();
+});
+
+// Replace current breakpoints with the saved defaults
+document.getElementById('load-defaults-btn').addEventListener('click', () => {
+  if (!Array.isArray(state.defaultBreakpoints) || !state.defaultBreakpoints.length) return;
+  if (!confirm('Replace current breakpoints with your saved defaults?')) return;
+  state.breakpoints = JSON.parse(JSON.stringify(state.defaultBreakpoints));
+  send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+  renderSettingsBpList();
+  renderBpList();
+  updateGenerateBtn();
+  showStatus('\u2713 Defaults loaded', 'success');
+});
+
+// Preferred library picker
+document.getElementById('preferred-library').addEventListener('change', (e) => {
+  state.preferredLibrary = e.target.value || null;
+  // If "All libraries" was picked, also clear the single-library filter — it's meaningless
+  if (!state.preferredLibrary) state.filterToLibrary = false;
+  send({
+    type: 'save-library-pref',
+    preferredLibrary: state.preferredLibrary,
+    filterToLibrary: state.filterToLibrary,
+  });
+  renderSettings();    // refresh disabled state of the toggle
+  closeAllCombos(null); // drop any open combo popup so next open uses new prefs
+});
+
+document.getElementById('filter-to-library').addEventListener('change', (e) => {
+  state.filterToLibrary = e.target.checked;
+  send({
+    type: 'save-library-pref',
+    preferredLibrary: state.preferredLibrary,
+    filterToLibrary: state.filterToLibrary,
+  });
+  closeAllCombos(null);
+});
+
+document.getElementById('add-bp-btn').addEventListener('click', () => {
+  state.breakpoints.push({
+    id: `bp-${Date.now()}`,
+    label: 'New',
+    width: 1024,
+    enabled: true,
+    variableId: null,
+    variableKey: null,
+  });
+  renderSettingsBpList();
+  renderBpList();
+  updateGenerateBtn();
+});
+
+// ─── Util ─────────────────────────────────────────────────────────────────────
+
+function escHtml(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─── Variable dropdown: grouping + sorting + filtering ───────────────────────
+// Keywords that strongly suggest a variable is a breakpoint/width token
+const BP_KEYWORDS = ['breakpoint','bp','width','screen','viewport','container','media','device','responsive'];
+// Keywords that suggest a variable is clearly NOT a breakpoint (pushes them down)
+const NON_BP_KEYWORDS = ['fontsize','fontweight','letterspacing','lineheight','spacing','radius','corner','border','opacity','shadow','elevation','blur','gap','padding','margin','inset'];
+
+function firstNameSegment(name) {
+  const parts = String(name || '').split('/');
+  return parts[0] || '';
+}
+
+// Split a slash-separated name into [prefix, leaf]. "typography/display/fontSize" -> ["typography/display", "fontSize"].
+// Names without slashes: prefix is empty, leaf is the whole name.
+function splitNamePath(name) {
+  const parts = String(name || '').split('/');
+  if (parts.length <= 1) return ['', name || ''];
+  const leaf = parts.pop();
+  return [parts.join('/'), leaf];
+}
+
+function scoreVariable(v) {
+  let score = 0;
+  const first = firstNameSegment(v.name).toLowerCase();
+  if (BP_KEYWORDS.includes(first)) score += 2;
+  if (typeof v.value === 'number' && v.value >= 320 && v.value <= 2560) score += 1;
+  if (NON_BP_KEYWORDS.includes(first)) score -= 1;
+  return score;
+}
+
+// Returns <optgroup> HTML string. `filter` is a case-insensitive substring; empty = show all.
+// Grouping is: Library (Local, or the library's name) · Collection. Variables listed under.
+// <optgroup> only supports one nesting level, so library+collection are joined in the label.
+function buildGroupedVarOptions(variables, bp, filter) {
+  const f = (filter || '').trim().toLowerCase();
+
+  // Filter first — match against library, collection, name, and value
+  const matches = variables.filter(v => {
+    if (!f) return true;
+    const hay = [v.libraryName, v.collection, v.name, v.value != null ? v.value + 'px' : ''].join(' ').toLowerCase();
+    return hay.includes(f);
+  });
+
+  // Group by `${library} / ${collection} / ${namePrefix}` — matches Figma's native picker.
+  // Names without a slash go under just `${library} / ${collection}`.
+  const groups = new Map();
+  for (const v of matches) {
+    const lib = v.libraryName || (v.isLibrary ? 'Library' : 'Local');
+    const collection = v.collection || '(no collection)';
+    const [prefix] = splitNamePath(v.name);
+    const key = prefix ? `${lib} / ${collection} / ${prefix}` : `${lib} / ${collection}`;
+    if (!groups.has(key)) groups.set(key, { lib, items: [] });
+    groups.get(key).items.push(v);
+  }
+
+  // Sort items in each group: relevance desc, value asc, name asc
+  for (const { items } of groups.values()) {
+    items.sort((a, b) => {
+      const sa = scoreVariable(a), sb = scoreVariable(b);
+      if (sb !== sa) return sb - sa;
+      const va = a.value == null ? Infinity : a.value;
+      const vb = b.value == null ? Infinity : b.value;
+      if (va !== vb) return va - vb;
+      return String(a.name).localeCompare(String(b.name));
+    });
+  }
+
+  // Sort groups: Local first, then libraries alpha. Within each source, highest relevance first.
+  const groupEntries = Array.from(groups.entries()).sort(([kA, gA], [kB, gB]) => {
+    const aIsLocal = gA.lib === 'Local';
+    const bIsLocal = gB.lib === 'Local';
+    if (aIsLocal !== bIsLocal) return aIsLocal ? -1 : 1;
+    // Same source — sort by highest item relevance, then alpha
+    const maxA = Math.max(...gA.items.map(scoreVariable));
+    const maxB = Math.max(...gB.items.map(scoreVariable));
+    if (maxB !== maxA) return maxB - maxA;
+    return kA.localeCompare(kB);
+  });
+
+  // Build HTML — option shows just the leaf name (everything after the last slash)
+  return groupEntries.map(([label, { items }]) => {
+    const opts = items.map(v => {
+      const optValue = v.id ? `local:${v.id}` : `library:${v.key}`;
+      const isSelected = (v.id && bp.variableId === v.id) || (v.key && bp.variableKey === v.key);
+      const valueDisplay = v.value !== null ? `${v.value}px` : '—';
+      const [, leaf] = splitNamePath(v.name);
+      return `<option value="${escHtml(optValue)}" ${isSelected ? 'selected' : ''}>${escHtml(leaf)} (${valueDisplay})</option>`;
+    }).join('');
+    return `<optgroup label="${escHtml(label)}">${opts}</optgroup>`;
+  }).join('');
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+
+send({ type: 'ready' });
+</script>
+</body>
+</html>
