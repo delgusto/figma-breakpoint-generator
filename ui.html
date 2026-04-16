@@ -417,6 +417,26 @@
       text-align: center;
     }
 
+    /* ── Loading spinner ── */
+    @keyframes bp-spin { to { transform: rotate(360deg); } }
+    .spinner {
+      display: inline-block;
+      width: 11px; height: 11px;
+      border: 1.5px solid var(--border);
+      border-top-color: var(--ink);
+      border-radius: 50%;
+      animation: bp-spin 0.7s linear infinite;
+      vertical-align: middle;
+    }
+    .var-combobox-loading {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px;
+      font-size: 11px; color: var(--muted);
+    }
+    .loading-row {
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+
     /* ── Separator ── */
     hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 
@@ -577,6 +597,7 @@ let state = {
   defaultBreakpoints: null,  // User-saved baseline (null until they save one)
   preferredLibrary: null,    // Library name to pin to top of the dropdown
   filterToLibrary: false,    // When true, hide libraries other than preferredLibrary
+  loadingTokens: true,       // True while the sandbox is fetching variables + modes
 };
 
 // ─── Messaging ────────────────────────────────────────────────────────────────
@@ -598,7 +619,9 @@ window.onmessage = (event) => {
       state.defaultBreakpoints = msg.defaultBreakpoints || null;
       state.preferredLibrary = msg.preferredLibrary || null;
       state.filterToLibrary = !!msg.filterToLibrary;
+      state.loadingTokens = false;
       renderAll();
+      refreshOpenPopups();
       break;
 
     case 'selection':
@@ -610,12 +633,10 @@ window.onmessage = (event) => {
     case 'variables':
       state.variableOptions = msg.variableOptions || [];
       state.modeOptions = msg.modeOptions || [];
+      state.loadingTokens = false;
       renderSettingsBpList();
       renderSettings(); // refresh var-hint + library picker list
-      document.getElementById('var-hint').textContent =
-        (state.variableOptions.length || state.modeOptions.length)
-          ? `${state.variableOptions.length} variable${state.variableOptions.length !== 1 ? 's' : ''}, ${state.modeOptions.length} mode${state.modeOptions.length !== 1 ? 's' : ''}.`
-          : 'No WIDTH-scoped variables or multi-mode collections found.';
+      refreshOpenPopups();
       break;
 
     case 'var-error':
@@ -640,10 +661,18 @@ window.onmessage = (event) => {
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     const target = tab.dataset.tab;
+    // Auto-save when leaving the Settings tab — don't lose edits
+    const wasOnSettings = document.getElementById('panel-settings').classList.contains('active');
+    if (wasOnSettings && target !== 'settings') {
+      state.settings.gap = parseInt(document.getElementById('gap-input').value) || 120;
+      state.settings.addLabels = document.getElementById('labels-toggle').checked;
+      send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+    }
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === target));
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     document.getElementById(`panel-${target}`).classList.add('active');
     if (target === 'settings') renderSettingsBpList();
+    if (target === 'main') { renderBpList(); updateGenerateBtn(); }
   });
 });
 
@@ -775,10 +804,19 @@ function renderSettingsBpList() {
     list.appendChild(card);
   });
 
-  // Events
+  // Events — Settings fields are the source of truth; changes sync live to the
+  // main Generate tab and auto-save to clientStorage so reopening the plugin
+  // shows the current state.
+  const persistAndSync = () => {
+    renderBpList();
+    updateGenerateBtn();
+    send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+  };
+
   list.querySelectorAll('.bp-name-input').forEach(el => {
     el.addEventListener('input', e => {
       state.breakpoints[parseInt(e.target.dataset.index)].label = e.target.value;
+      persistAndSync();
     });
   });
 
@@ -787,6 +825,7 @@ function renderSettingsBpList() {
       const val = parseInt(e.target.value);
       if (!isNaN(val) && val > 0) {
         state.breakpoints[parseInt(e.target.dataset.index)].width = val;
+        persistAndSync();
       }
     });
   });
@@ -1013,11 +1052,17 @@ function buildComboboxPopup(variables, bp, filter) {
        </div>`
     : '';
 
-  if (!allItems.length && !noneOption) {
+  // Loading state — shown above the list while tokens are still being fetched.
+  // Useful on first open; resolves into the real list once the sandbox responds.
+  const loadingRow = state.loadingTokens
+    ? `<div class="var-combobox-loading"><span class="spinner"></span>Loading tokens…</div>`
+    : '';
+
+  if (!allItems.length && !noneOption && !loadingRow) {
     return `<div class="var-combobox-empty">No matches</div>`;
   }
   if (!allItems.length) {
-    return noneOption;
+    return loadingRow + noneOption;
   }
 
   // Group by `${library} / ${collection} / ${namePrefix}` for variables,
@@ -1225,6 +1270,21 @@ function highlightOption(opts, idx) {
   }
 }
 
+// Redraw the contents of any currently-open combobox popup. Called when
+// the token list changes (init / variables messages arrive) so the user
+// doesn't have to close-and-reopen to see new options.
+function refreshOpenPopups() {
+  document.querySelectorAll('.var-combobox.open').forEach(wrap => {
+    const i = parseInt(wrap.dataset.index);
+    const bp = state.breakpoints[i];
+    const input = wrap.querySelector('.var-combobox-input');
+    const popup = wrap.querySelector('.var-combobox-popup');
+    if (!bp || !popup) return;
+    const filter = input ? input.value : '';
+    popup.innerHTML = buildComboboxPopup(state.variableOptions, bp, filter);
+  });
+}
+
 function closeAllCombos(except) {
   document.querySelectorAll('.var-combobox.open').forEach(el => {
     if (el === except) return;
@@ -1250,9 +1310,22 @@ function renderSettings() {
 
   const varCount = state.variableOptions.length;
   const modeCount = state.modeOptions.length;
-  document.getElementById('var-hint').textContent = (varCount || modeCount)
-    ? `${varCount} variable${varCount !== 1 ? 's' : ''}, ${modeCount} mode${modeCount !== 1 ? 's' : ''}.`
-    : 'No WIDTH-scoped variables or multi-mode collections found.';
+  const varHint = document.getElementById('var-hint');
+  if (state.loadingTokens) {
+    varHint.innerHTML = `<span class="loading-row"><span class="spinner"></span>Loading tokens\u2026</span>`;
+  } else if (varCount || modeCount) {
+    varHint.textContent = `${varCount} variable${varCount !== 1 ? 's' : ''}, ${modeCount} mode${modeCount !== 1 ? 's' : ''}.`;
+  } else {
+    varHint.textContent = 'No WIDTH-scoped variables or multi-mode collections found.';
+  }
+
+  // Disable the Refresh button while a fetch is in flight
+  const refreshBtn = document.getElementById('refresh-vars-btn');
+  if (refreshBtn) {
+    refreshBtn.disabled = state.loadingTokens;
+    refreshBtn.style.opacity = state.loadingTokens ? '0.5' : '1';
+    refreshBtn.textContent = state.loadingTokens ? 'Loading…' : 'Refresh';
+  }
 
   // Defaults section: enable/disable "Load my defaults" based on whether any are saved
   const loadBtn = document.getElementById('load-defaults-btn');
@@ -1371,6 +1444,9 @@ document.getElementById('reset-btn').addEventListener('click', () => {
 });
 
 document.getElementById('refresh-vars-btn').addEventListener('click', () => {
+  state.loadingTokens = true;
+  renderSettings();
+  refreshOpenPopups();
   send({ type: 'refresh-variables' });
 });
 
