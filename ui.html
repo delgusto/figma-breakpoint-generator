@@ -763,10 +763,13 @@ function renderSettingsBpList() {
     const selected = getSelectedLink(bp);
     const displayText = linkDisplayText(selected);
 
-    // Mode-linked: disable the width field (width is driven by the bound variable).
-    // Variable-linked or manual: editable (typing clears the link).
+    // Mode-linked: disable the width field. If the mode has a resolved width,
+    // show it greyed as a reference; otherwise leave empty.
     const isModeLinked = !!selected && selected.kind === 'mode';
     const linked = isModeLinked;
+    const displayWidth = isModeLinked
+      ? (selected.value != null ? selected.value : '')
+      : bp.width;
 
     card.innerHTML = `
       <div class="settings-bp-top">
@@ -781,7 +784,7 @@ function renderSettingsBpList() {
           </svg>
         </span>
         <input type="text" class="bp-name-input" data-index="${i}" value="${escHtml(bp.label)}" placeholder="Breakpoint name" />
-        <input type="number" class="bp-width-input" data-index="${i}" value="${bp.width}" min="1" max="9999" placeholder="px"
+        <input type="number" class="bp-width-input" data-index="${i}" value="${displayWidth}" min="1" max="9999" placeholder="px"
           ${linked ? 'disabled style="opacity:0.4;"' : ''} />
         <button class="settings-bp-remove remove-bp-btn" data-index="${i}" title="Remove breakpoint">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -1224,12 +1227,17 @@ function wireCombobox(wrap, i) {
     const anyLink = !!resolved;
     const isModeLink = !!resolved && resolved.kind === 'mode';
 
-    // Mode-linked: width is driven by the bound variable, so disable the field.
+    // Mode-linked: disable + show the resolved value greyed as a reference.
     // Variable-linked or manual: field stays editable.
     if (widthInput) {
       widthInput.disabled = isModeLink;
       widthInput.style.opacity = isModeLink ? '0.4' : '1';
-      if (isModeLink) widthInput.value = '';
+      if (isModeLink) {
+        widthInput.value = resolved.value != null ? resolved.value : '';
+      } else if (!anyLink) {
+        // "No variable" — restore the bp.width in case we cleared it on a prior mode-link
+        widthInput.value = bp.width;
+      }
     }
 
     wrap.classList.toggle('has-value', anyLink);
