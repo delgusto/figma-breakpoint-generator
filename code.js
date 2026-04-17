@@ -435,6 +435,10 @@ async function generate({ sourceId, breakpoints, settings }) {
     clone.name = `${source.name} / ${bp.label}`;
     clone.y = baseY;
 
+    // Clear min/max width constraints inherited from library components so the
+    // clone can resize freely to the target breakpoint width.
+    clearWidthConstraints(clone);
+
     const modeLinked = bp.modeId && (bp.modeCollectionKey || bp.modeCollectionId);
     let appliedViaMode = false;
     if (modeLinked) {
@@ -498,6 +502,22 @@ function ensureAutoLayoutStructure(frame) {
       }
     } catch (err) {
       // Some child types don't support layoutSizing — skip silently
+    }
+  }
+}
+
+// Recursively clear min/max width constraints on a node and all descendants.
+// Library components often have minWidth set per variant, which prevents the
+// clone from resizing below that threshold. Clearing them lets the layout
+// respond freely to the new breakpoint width.
+function clearWidthConstraints(node) {
+  try {
+    if ('minWidth' in node && node.minWidth !== null) node.minWidth = null;
+    if ('maxWidth' in node && node.maxWidth !== null) node.maxWidth = null;
+  } catch (err) {}
+  if ('children' in node) {
+    for (var i = 0; i < node.children.length; i++) {
+      clearWidthConstraints(node.children[i]);
     }
   }
 }
