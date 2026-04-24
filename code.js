@@ -43,12 +43,13 @@ const DEFAULT_SETTINGS = {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 async function init() {
-  const [savedBreakpoints, savedSettings, defaultBreakpoints, preferredLibrary, filterToLibrary] = await Promise.all([
+  const [savedBreakpoints, savedSettings, defaultBreakpoints, preferredLibrary, filterToLibrary, variantTargetId] = await Promise.all([
     figma.clientStorage.getAsync('breakpoints'),
     figma.clientStorage.getAsync('settings'),
     figma.clientStorage.getAsync('defaultBreakpoints'),
     figma.clientStorage.getAsync('preferredLibrary'),
     figma.clientStorage.getAsync('filterToLibrary'),
+    figma.clientStorage.getAsync('variantTargetId'),
   ]);
 
   const breakpoints = savedBreakpoints || DEFAULT_BREAKPOINTS;
@@ -69,6 +70,7 @@ async function init() {
     defaultBreakpoints: defaultBreakpoints || null,
     preferredLibrary: preferredLibrary || null,
     filterToLibrary: !!filterToLibrary,
+    variantTargetId: variantTargetId || null,
   });
   sendSelection();
 }
@@ -312,43 +314,42 @@ function sendSelection() {
   figma.ui.postMessage({ type: 'selection', source, variantSchema });
 }
 
-// Walk the selected node (and its descendants) and look for the component set
-// that drives most nested INSTANCE children. Returns a schema describing that
-// set's VARIANT properties, or null if there are no variant-backed instances.
-function detectVariantSchema(node) {
-  if (!node) return null;
+// Walk the selected node (and its descendants) and return every component set
+// whose instances appear inside the selection, ranked by how likely they are to
+// be the "breakpoint" set the user wants to switch.
+//
+// Ranking signals (most → least important):
+//   1. Variant option names look like breakpoint labels (XS/SM/MD/LG/XL,
+//      Mobile/Tablet/Laptop/Desktop/Wide, Small/Medium/Large). These are
+//      almost always the target.
+//   2. Shallow depth from the selection. A local component wrapping one
+//      library breakpoint component puts the target at depth 1-2; deeply
+//      nested buttons live at depth 4+.
+//   3. Fewer variant options total. Breakpoint sets usually have 3-7; a
+//      button set with size+state+variant cross-products has dozens.
+//
+// The UI picks the top candidate automatically but always lets the user
+// override via the target dropdown.
+const BREAKPOINT_TOKEN_WORDS = [
+  'mobile','tablet','laptop','desktop','wide','ultrawide',
+  'xs','sm','md','lg','xl','xxl','xxxl','2xl','3xl',
+  'small','medium','large','extra-small','extra-large',
+  'phone','pad','tv',
+];
 
-  const instances = [];
-  if (node.type === 'INSTANCE') instances.push(node);
-  if ('findAll' in node) {
-    try {
-      const nested = node.findAll(n => n.type === 'INSTANCE');
-      for (var i = 0; i < nested.length; i++) instances.push(nested[i]);
-    } catch (err) {}
+function countBreakpointAffinity(properties) {
+  let hits = 0;
+  for (const prop of properties) {
+    for (const opt of prop.options) {
+      const lowered = String(opt).toLowerCase().replace(/\s+/g, '-');
+      if (BREAKPOINT_TOKEN_WORDS.indexOf(lowered) !== -1) hits += 1;
+    }
   }
-  if (!instances.length) return null;
+  return hits;
+}
 
-  // Group by component set id — the set with the most member instances wins.
-  const bySet = new Map();
-  for (var i = 0; i < instances.length; i++) {
-    try {
-      const main = instances[i].mainComponent;
-      if (!main) continue;
-      const parent = main.parent;
-      if (!parent || parent.type !== 'COMPONENT_SET') continue;
-      const entry = bySet.get(parent.id) || { set: parent, count: 0 };
-      entry.count += 1;
-      bySet.set(parent.id, entry);
-    } catch (err) {}
-  }
-  if (!bySet.size) return null;
-
-  let primary = null;
-  bySet.forEach(function(entry) {
-    if (!primary || entry.count > primary.count) primary = entry;
-  });
-
-  const defs = primary.set.componentPropertyDefinitions || {};
+function buildSchemaForSet(set) {
+  const defs = set.componentPropertyDefinitions || {};
   const properties = [];
   for (const key of Object.keys(defs)) {
     const d = defs[key];
@@ -361,12 +362,78 @@ function detectVariantSchema(node) {
     }
   }
   if (!properties.length) return null;
+  return {
+    componentSetId: set.id,
+    componentSetName: set.name,
+    properties: properties,
+  };
+}
+
+// Breadth-first walk so we can track depth. Figma's findAll doesn't give us
+// depth, so we do it manually.
+function collectInstancesWithDepth(root) {
+  const results = [];
+  const queue = [{ node: root, depth: 0 }];
+  while (queue.length) {
+    const { node, depth } = queue.shift();
+    if (node.type === 'INSTANCE') results.push({ inst: node, depth });
+    if ('children' in node && node.children) {
+      for (const child of node.children) queue.push({ node: child, depth: depth + 1 });
+    }
+  }
+  return results;
+}
+
+function detectVariantSchema(node) {
+  if (!node) return null;
+
+  const found = collectInstancesWithDepth(node);
+  if (!found.length) return null;
+
+  // Group by component-set id, keeping the shallowest depth seen.
+  const bySet = new Map();
+  for (const { inst, depth } of found) {
+    try {
+      const main = inst.mainComponent;
+      if (!main) continue;
+      const parent = main.parent;
+      if (!parent || parent.type !== 'COMPONENT_SET') continue;
+      const entry = bySet.get(parent.id);
+      if (entry) {
+        entry.count += 1;
+        if (depth < entry.minDepth) entry.minDepth = depth;
+      } else {
+        bySet.set(parent.id, { set: parent, count: 1, minDepth: depth });
+      }
+    } catch (err) {}
+  }
+  if (!bySet.size) return null;
+
+  // Build candidate objects with ranking metadata.
+  const candidates = [];
+  bySet.forEach(function(entry) {
+    const schema = buildSchemaForSet(entry.set);
+    if (!schema) return;
+    const totalOptions = schema.properties.reduce((n, p) => n + p.options.length, 0);
+    candidates.push(Object.assign({}, schema, {
+      count: entry.count,
+      minDepth: entry.minDepth,
+      totalOptions: totalOptions,
+      breakpointAffinity: countBreakpointAffinity(schema.properties),
+    }));
+  });
+  if (!candidates.length) return null;
+
+  // Sort: high affinity first, then shallow, then fewer total options.
+  candidates.sort(function(a, b) {
+    if (b.breakpointAffinity !== a.breakpointAffinity) return b.breakpointAffinity - a.breakpointAffinity;
+    if (a.minDepth !== b.minDepth) return a.minDepth - b.minDepth;
+    return a.totalOptions - b.totalOptions;
+  });
 
   return {
-    componentSetId: primary.set.id,
-    componentSetName: primary.set.name,
-    properties: properties,
-    nestedInstanceCount: primary.count,
+    candidates: candidates,
+    primaryId: candidates[0].componentSetId,
   };
 }
 
@@ -385,6 +452,10 @@ figma.ui.onmessage = async (msg) => {
         figma.clientStorage.setAsync('breakpoints', msg.breakpoints),
         figma.clientStorage.setAsync('settings', msg.settings),
       ]);
+      break;
+
+    case 'save-variant-target':
+      await figma.clientStorage.setAsync('variantTargetId', msg.variantTargetId || null);
       break;
 
     case 'reset-settings': {
@@ -449,7 +520,7 @@ figma.ui.onmessage = async (msg) => {
 
 // ─── Generate ─────────────────────────────────────────────────────────────────
 
-async function generate({ sourceId, breakpoints, settings, variantSchema }) {
+async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
   const source = figma.getNodeById(sourceId);
   if (!source) throw new Error('Source not found — re-select the frame and try again.');
   if (!['FRAME', 'INSTANCE', 'COMPONENT'].includes(source.type)) {
@@ -500,33 +571,41 @@ async function generate({ sourceId, breakpoints, settings, variantSchema }) {
     // clone can resize freely to the target breakpoint width.
     clearWidthConstraints(clone);
 
-    // Variant is an additional axis layered on top of the existing width/mode
-    // logic — it switches component variants on matching instances but does NOT
-    // short-circuit the resize, since only some nested pieces may be variant-driven.
-    if (variantSchema && bp.variantProps && Object.keys(bp.variantProps).length) {
-      applyVariantProps(clone, bp.variantProps, variantSchema.componentSetId);
-    }
+    // Either / or per breakpoint:
+    //   variantProps set → swap component variant, leave width alone.
+    //   otherwise         → apply width/mode logic as before.
+    //
+    // When variant mode is chosen, we intentionally skip resize because the
+    // swapped variant is expected to carry its own width tokens (matching the
+    // breakpoint). If the user wants both, they should set variantProps AND a
+    // width — but by design this branch keeps the two axes orthogonal so
+    // deeply-nested library components don't fight the outer resize.
+    const hasVariant = variantTargetId && bp.variantProps && Object.keys(bp.variantProps).length;
 
-    const modeLinked = bp.modeId && (bp.modeCollectionKey || bp.modeCollectionId);
-    let appliedViaMode = false;
-    if (modeLinked) {
-      const collection = await resolveCollection(bp);
-      if (collection && clone.setExplicitVariableModeForCollection) {
-        try {
-          clone.setExplicitVariableModeForCollection(collection, bp.modeId);
-          appliedViaMode = true;
-          // Intentionally do NOT touch the clone's auto-layout or children —
-          // the source's bound width variable drives the resize, and the source's
-          // existing layout handles reflow.
-        } catch (err) {}
+    if (hasVariant) {
+      applyVariantProps(clone, bp.variantProps, variantTargetId);
+    } else {
+      const modeLinked = bp.modeId && (bp.modeCollectionKey || bp.modeCollectionId);
+      let appliedViaMode = false;
+      if (modeLinked) {
+        const collection = await resolveCollection(bp);
+        if (collection && clone.setExplicitVariableModeForCollection) {
+          try {
+            clone.setExplicitVariableModeForCollection(collection, bp.modeId);
+            appliedViaMode = true;
+            // Intentionally do NOT touch the clone's auto-layout or children —
+            // the source's bound width variable drives the resize, and the source's
+            // existing layout handles reflow.
+          } catch (err) {}
+        }
       }
-    }
 
-    if (!appliedViaMode) {
-      if (clone.type === 'FRAME') {
-        applyAutoLayoutWidth(clone, bp.width);
-      } else {
-        clone.resize(bp.width, clone.height);
+      if (!appliedViaMode) {
+        if (clone.type === 'FRAME') {
+          applyAutoLayoutWidth(clone, bp.width);
+        } else {
+          clone.resize(bp.width, clone.height);
+        }
       }
     }
 

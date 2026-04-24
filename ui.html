@@ -531,10 +531,9 @@
 
       <!-- Breakpoints editor -->
       <div class="section-label">Breakpoints</div>
-      <div id="variant-banner" class="variant-banner" style="display:none">
-        <span class="variant-banner-text" id="variant-banner-text"></span>
-        <button type="button" id="variant-automatch-btn">Auto-match</button>
-      </div>
+      <!-- Populated by renderVariantBanner() when the selection contains
+           variant-backed instances. Holds the target picker + auto-match. -->
+      <div id="variant-banner" class="variant-banner" style="display:none"></div>
       <div id="settings-bp-list"></div>
       <button class="btn-add" id="add-bp-btn">+ Add breakpoint</button>
 
@@ -635,9 +634,22 @@ let state = {
   preferredLibrary: null,    // Library name to pin to top of the dropdown
   filterToLibrary: false,    // When true, hide libraries other than preferredLibrary
   loadingTokens: true,       // True while the sandbox is fetching variables + modes
-  variantSchema: null,       // {componentSetId, componentSetName, properties, nestedInstanceCount} when the selection drives a variant set
+  variantCandidates: [],     // All component sets found in the selection, ranked by breakpoint affinity + shallowness
+  variantTargetId: null,     // Which candidate the user has picked as the target (null = top-ranked)
   lastVariantSchemaId: null, // Component set id we last auto-matched against, used to skip redundant re-match passes
 };
+
+// Derive the currently active variant schema from the candidates list + the
+// user's target pick. Returns null when nothing is selectable.
+function getActiveVariantSchema() {
+  if (!state.variantCandidates.length) return null;
+  const id = state.variantTargetId;
+  if (id) {
+    const match = state.variantCandidates.find(c => c.componentSetId === id);
+    if (match) return match;
+  }
+  return state.variantCandidates[0];
+}
 
 // ─── Messaging ────────────────────────────────────────────────────────────────
 
@@ -658,6 +670,7 @@ window.onmessage = (event) => {
       state.defaultBreakpoints = msg.defaultBreakpoints || null;
       state.preferredLibrary = msg.preferredLibrary || null;
       state.filterToLibrary = !!msg.filterToLibrary;
+      state.variantTargetId = msg.variantTargetId || null;
       state.loadingTokens = false;
       renderAll();
       refreshOpenPopups();
@@ -665,7 +678,14 @@ window.onmessage = (event) => {
 
     case 'selection':
       state.source = msg.source;
-      state.variantSchema = msg.variantSchema || null;
+      state.variantCandidates = (msg.variantSchema && msg.variantSchema.candidates) || [];
+      // If previously-selected target is still in the new candidate list,
+      // keep it; otherwise fall back to the top-ranked candidate so the user
+      // sees something sensible after changing selection.
+      if (state.variantTargetId) {
+        const stillThere = state.variantCandidates.some(c => c.componentSetId === state.variantTargetId);
+        if (!stillThere) state.variantTargetId = null;
+      }
       syncVariantPropsWithSchema();
       renderSource();
       renderSettingsBpList();
@@ -726,7 +746,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 // of a new schema fills in any unset property with a case-insensitive label
 // match. Returns true if anything changed.
 function syncVariantPropsWithSchema() {
-  const schema = state.variantSchema;
+  const schema = getActiveVariantSchema();
   if (!schema) return false;
 
   const schemaIdChanged = state.lastVariantSchemaId !== schema.componentSetId;
@@ -769,7 +789,7 @@ function syncVariantPropsWithSchema() {
 // Force re-run auto-match against the current schema, overwriting any user
 // entries with a fresh label match. Used by the "Auto-match" banner button.
 function forceAutoMatchVariants() {
-  const schema = state.variantSchema;
+  const schema = getActiveVariantSchema();
   if (!schema) return;
   for (const bp of state.breakpoints) {
     const next = {};
@@ -805,13 +825,48 @@ function buildVariantRowHtml(schema, bp, i) {
 
 function renderVariantBanner() {
   const banner = document.getElementById('variant-banner');
-  const textEl = document.getElementById('variant-banner-text');
-  if (!banner || !textEl) return;
-  const schema = state.variantSchema;
-  if (!schema) { banner.style.display = 'none'; return; }
-  const count = schema.nestedInstanceCount;
-  textEl.textContent = `Variant set: ${schema.componentSetName} · ${count} instance${count !== 1 ? 's' : ''}`;
+  if (!banner) return;
+  const candidates = state.variantCandidates;
+  if (!candidates.length) { banner.style.display = 'none'; banner.innerHTML = ''; return; }
+
+  const active = getActiveVariantSchema();
+  const activeId = active ? active.componentSetId : null;
+
+  // Build the target picker — one <option> per candidate component set. We
+  // annotate each with its nested instance count + whether it looks like a
+  // breakpoint set (affinity > 0) so the user can pick confidently when the
+  // auto-pick grabs the wrong one.
+  const options = candidates.map(c => {
+    const tag = c.breakpointAffinity > 0 ? ' · breakpoint-like' : '';
+    const label = `${c.componentSetName} (${c.count})${tag}`;
+    return `<option value="${escHtml(c.componentSetId)}" ${c.componentSetId === activeId ? 'selected' : ''}>${escHtml(label)}</option>`;
+  }).join('');
+
+  banner.innerHTML = `
+    <div style="display:flex; flex-direction:column; gap:6px; flex:1; min-width:0;">
+      <div style="font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em;">Variant target</div>
+      <select id="variant-target-select" style="font-size:11px;">${options}</select>
+    </div>
+    <button type="button" id="variant-automatch-btn" style="align-self:flex-end;">Auto-match</button>
+  `;
   banner.style.display = 'flex';
+  banner.style.alignItems = 'flex-start';
+
+  const select = document.getElementById('variant-target-select');
+  if (select) {
+    select.addEventListener('change', e => {
+      state.variantTargetId = e.target.value;
+      // New target might have different property names / options — re-run
+      // auto-match so each bp row fills in sensible defaults for the pick.
+      state.lastVariantSchemaId = null;
+      syncVariantPropsWithSchema();
+      send({ type: 'save-variant-target', variantTargetId: state.variantTargetId });
+      renderSettingsBpList();
+      renderBpList();
+    });
+  }
+  const btn = document.getElementById('variant-automatch-btn');
+  if (btn) btn.addEventListener('click', forceAutoMatchVariants);
 }
 
 // ─── Render: source card ──────────────────────────────────────────────────────
@@ -897,7 +952,7 @@ function renderSettingsBpList() {
   const list = document.getElementById('settings-bp-list');
   list.innerHTML = '';
 
-  const schema = state.variantSchema;
+  const schema = getActiveVariantSchema();
 
   state.breakpoints.forEach((bp, i) => {
     const card = document.createElement('div');
@@ -906,10 +961,11 @@ function renderSettingsBpList() {
     const selected = getSelectedLink(bp);
     const displayText = linkDisplayText(selected);
 
-    // Mode-linked: disable the width field. If the mode has a resolved width,
-    // show it greyed as a reference; otherwise leave empty.
+    // Mode-linked or variant-set: disable the width field. Variant switching
+    // and width are mutually exclusive per row — variant wins if both are set.
     const isModeLinked = !!selected && selected.kind === 'mode';
-    const linked = isModeLinked;
+    const hasVariantSet = schema && bp.variantProps && Object.keys(bp.variantProps).length;
+    const linked = isModeLinked || hasVariantSet;
     const displayWidth = isModeLinked
       ? (selected.value != null ? selected.value : '')
       : bp.width;
@@ -1621,14 +1677,13 @@ document.getElementById('generate-btn').addEventListener('click', () => {
       sourceId: state.source.id,
       breakpoints: state.breakpoints,
       settings: state.settings,
-      variantSchema: state.variantSchema,
+      variantTargetId: (getActiveVariantSchema() || {}).componentSetId || null,
     },
   });
 });
 
-document.getElementById('variant-automatch-btn').addEventListener('click', () => {
-  forceAutoMatchVariants();
-});
+// The auto-match button lives inside #variant-banner, which is re-rendered
+// by renderVariantBanner — bind there, not here.
 
 document.getElementById('save-btn').addEventListener('click', () => {
   state.settings.gap = parseInt(document.getElementById('gap-input').value) || 120;
