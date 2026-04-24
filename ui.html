@@ -557,6 +557,15 @@
             <input type="checkbox" id="labels-toggle" checked />
           </div>
         </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Remove min/max width</div>
+            <div class="setting-sub">Strip width constraints from clones so they resize freely. Turn off to keep component constraints.</div>
+          </div>
+          <div class="setting-control">
+            <input type="checkbox" id="clear-constraints-toggle" checked />
+          </div>
+        </div>
       </div>
 
       <hr />
@@ -627,7 +636,7 @@
 let state = {
   source: null,
   breakpoints: [],
-  settings: { gap: 120, addLabels: true },
+  settings: { gap: 120, addLabels: true, clearWidthConstraints: true },
   variableOptions: [],
   modeOptions: [],           // Every (collection, mode) pair from collections with >1 mode
   defaultBreakpoints: null,  // User-saved baseline (null until they save one)
@@ -729,6 +738,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (wasOnSettings && target !== 'settings') {
       state.settings.gap = parseInt(document.getElementById('gap-input').value) || 120;
       state.settings.addLabels = document.getElementById('labels-toggle').checked;
+      state.settings.clearWidthConstraints = document.getElementById('clear-constraints-toggle').checked;
       send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
     }
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === target));
@@ -1567,6 +1577,7 @@ document.addEventListener('mousedown', e => {
 function renderSettings() {
   document.getElementById('gap-input').value = state.settings.gap ?? 120;
   document.getElementById('labels-toggle').checked = state.settings.addLabels !== false;
+  document.getElementById('clear-constraints-toggle').checked = state.settings.clearWidthConstraints !== false;
 
   const varCount = state.variableOptions.length;
   const modeCount = state.modeOptions.length;
@@ -1688,6 +1699,7 @@ document.getElementById('generate-btn').addEventListener('click', () => {
 document.getElementById('save-btn').addEventListener('click', () => {
   state.settings.gap = parseInt(document.getElementById('gap-input').value) || 120;
   state.settings.addLabels = document.getElementById('labels-toggle').checked;
+  state.settings.clearWidthConstraints = document.getElementById('clear-constraints-toggle').checked;
   send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
   // Sync back to main panel
   renderBpList();
