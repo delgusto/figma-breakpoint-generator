@@ -306,7 +306,68 @@ function getSourceNode() {
 }
 
 function sendSelection() {
-  figma.ui.postMessage({ type: 'selection', source: getSourceNode() });
+  const source = getSourceNode();
+  const node = source ? figma.getNodeById(source.id) : null;
+  const variantSchema = node ? detectVariantSchema(node) : null;
+  figma.ui.postMessage({ type: 'selection', source, variantSchema });
+}
+
+// Walk the selected node (and its descendants) and look for the component set
+// that drives most nested INSTANCE children. Returns a schema describing that
+// set's VARIANT properties, or null if there are no variant-backed instances.
+function detectVariantSchema(node) {
+  if (!node) return null;
+
+  const instances = [];
+  if (node.type === 'INSTANCE') instances.push(node);
+  if ('findAll' in node) {
+    try {
+      const nested = node.findAll(n => n.type === 'INSTANCE');
+      for (var i = 0; i < nested.length; i++) instances.push(nested[i]);
+    } catch (err) {}
+  }
+  if (!instances.length) return null;
+
+  // Group by component set id — the set with the most member instances wins.
+  const bySet = new Map();
+  for (var i = 0; i < instances.length; i++) {
+    try {
+      const main = instances[i].mainComponent;
+      if (!main) continue;
+      const parent = main.parent;
+      if (!parent || parent.type !== 'COMPONENT_SET') continue;
+      const entry = bySet.get(parent.id) || { set: parent, count: 0 };
+      entry.count += 1;
+      bySet.set(parent.id, entry);
+    } catch (err) {}
+  }
+  if (!bySet.size) return null;
+
+  let primary = null;
+  bySet.forEach(function(entry) {
+    if (!primary || entry.count > primary.count) primary = entry;
+  });
+
+  const defs = primary.set.componentPropertyDefinitions || {};
+  const properties = [];
+  for (const key of Object.keys(defs)) {
+    const d = defs[key];
+    if (d && d.type === 'VARIANT') {
+      properties.push({
+        name: key,
+        options: (d.variantOptions || []).slice(),
+        defaultValue: d.defaultValue || null,
+      });
+    }
+  }
+  if (!properties.length) return null;
+
+  return {
+    componentSetId: primary.set.id,
+    componentSetName: primary.set.name,
+    properties: properties,
+    nestedInstanceCount: primary.count,
+  };
 }
 
 figma.on('selectionchange', sendSelection);
@@ -388,7 +449,7 @@ figma.ui.onmessage = async (msg) => {
 
 // ─── Generate ─────────────────────────────────────────────────────────────────
 
-async function generate({ sourceId, breakpoints, settings }) {
+async function generate({ sourceId, breakpoints, settings, variantSchema }) {
   const source = figma.getNodeById(sourceId);
   if (!source) throw new Error('Source not found — re-select the frame and try again.');
   if (!['FRAME', 'INSTANCE', 'COMPONENT'].includes(source.type)) {
@@ -439,6 +500,13 @@ async function generate({ sourceId, breakpoints, settings }) {
     // clone can resize freely to the target breakpoint width.
     clearWidthConstraints(clone);
 
+    // Variant is an additional axis layered on top of the existing width/mode
+    // logic — it switches component variants on matching instances but does NOT
+    // short-circuit the resize, since only some nested pieces may be variant-driven.
+    if (variantSchema && bp.variantProps && Object.keys(bp.variantProps).length) {
+      applyVariantProps(clone, bp.variantProps, variantSchema.componentSetId);
+    }
+
     const modeLinked = bp.modeId && (bp.modeCollectionKey || bp.modeCollectionId);
     let appliedViaMode = false;
     if (modeLinked) {
@@ -480,6 +548,31 @@ async function generate({ sourceId, breakpoints, settings }) {
   figma.viewport.scrollAndZoomIntoView(generated);
 
   return resolved.length;
+}
+
+// ─── Variant helper ───────────────────────────────────────────────────────────
+
+// Walk a clone and call setProperties on every INSTANCE whose main component
+// belongs to the detected component set. Each call is independently guarded so
+// one failure doesn't block the rest.
+function applyVariantProps(node, props, componentSetId) {
+  const targets = [];
+  if (node.type === 'INSTANCE') targets.push(node);
+  if ('findAll' in node) {
+    try {
+      const nested = node.findAll(n => n.type === 'INSTANCE');
+      for (var i = 0; i < nested.length; i++) targets.push(nested[i]);
+    } catch (err) {}
+  }
+
+  for (var i = 0; i < targets.length; i++) {
+    const inst = targets[i];
+    try {
+      const main = inst.mainComponent;
+      if (!main || !main.parent || main.parent.id !== componentSetId) continue;
+      inst.setProperties(props);
+    } catch (err) {}
+  }
 }
 
 // ─── Auto-layout helper ───────────────────────────────────────────────────────
