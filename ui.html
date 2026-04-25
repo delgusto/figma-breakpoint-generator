@@ -182,8 +182,8 @@
     .settings-bp-remove:hover { color: var(--red); background: rgba(224,82,82,0.12); }
     .settings-bp-remove svg { display: block; }
     .var-badge {
-      font-size: 10px; color: var(--accent);
-      background: var(--accent-a); border-radius: 3px;
+      font-size: 10px; font-weight: 600; color: var(--accent-ink);
+      background: var(--accent); border-radius: 3px;
       padding: 2px 6px; white-space: nowrap; flex-shrink: 0;
     }
 
@@ -205,7 +205,8 @@
 
     /* Banner shown above settings list when a variant-driven instance is selected */
     .variant-banner {
-      background: var(--accent-a); color: var(--accent);
+      background: var(--accent-a); color: var(--text);
+      border: 1px solid rgba(255,204,0,0.35);
       border-radius: var(--radius-sm);
       padding: 6px 10px; margin-bottom: 8px;
       font-size: 11px; line-height: 1.4;
@@ -213,12 +214,13 @@
     }
     .variant-banner-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .variant-banner button {
-      background: transparent; border: 1px solid currentColor;
-      color: inherit; font-size: 10px; padding: 3px 8px;
+      background: var(--accent); border: 1px solid var(--accent);
+      color: var(--accent-ink); font-size: 10px; font-weight: 600;
+      padding: 3px 8px;
       border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap;
       flex-shrink: 0;
     }
-    .variant-banner button:hover { background: rgba(255,255,255,0.08); }
+    .variant-banner button:hover { opacity: 0.85; }
 
     /* ── Inputs ── */
     input[type="text"], input[type="number"], select {
@@ -353,8 +355,9 @@
 
     /* ── Var tag inline ── */
     .linked-tag {
-      font-size: 10px; background: var(--accent-a);
-      color: var(--accent); border-radius: 3px;
+      font-size: 10px; font-weight: 600;
+      background: var(--accent); color: var(--accent-ink);
+      border-radius: 3px;
       padding: 1px 5px; margin-left: 4px;
     }
 
@@ -967,6 +970,10 @@ function renderSettingsBpList() {
   state.breakpoints.forEach((bp, i) => {
     const card = document.createElement('div');
     card.className = 'settings-bp-row';
+    // Drop handler reads this to find the target index — keep it on the card
+    // (handle has its own data-index for dragstart, but the card is what
+    // closest() returns during dragover/drop).
+    card.dataset.index = String(i);
 
     const selected = getSelectedLink(bp);
     const displayText = linkDisplayText(selected);
