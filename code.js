@@ -38,7 +38,7 @@ const DEFAULT_BREAKPOINTS = [
 const DEFAULT_SETTINGS = {
   gap: 120,
   addLabels: true,
-  clearWidthConstraints: true, // Strip min/max width inherited from library components so the clone can resize freely. Turn off to preserve component constraints.
+  clearWidthConstraints: false, // Off by default — preserves component constraints. Turn on to strip min/max width so clones resize freely.
 };
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -573,7 +573,7 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
     // settings.clearWidthConstraints = false when the user wants the library
     // component's own min-width to bound the clone (e.g. a card that should
     // never go below 320px even on a 200px breakpoint).
-    if (settings.clearWidthConstraints !== false) {
+    if (settings.clearWidthConstraints === true) {
       clearWidthConstraints(clone);
     }
 

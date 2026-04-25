@@ -320,14 +320,18 @@
     .setting-row {
       display: flex; align-items: center; justify-content: space-between;
       padding: 8px 0; border-bottom: 1px solid var(--border2);
+      gap: 12px;
     }
+    /* Label container: flex:1 + min-width:0 lets long sub-text wrap inside the
+       narrow plugin panel instead of forcing horizontal overflow. */
+    .setting-row > div:first-child { flex: 1 1 auto; min-width: 0; }
     .setting-row.stacked {
       flex-direction: column; align-items: stretch; gap: 6px;
     }
     .setting-row.stacked .setting-control { width: 100%; }
     .setting-row:last-child { border-bottom: none; }
     .setting-label { font-size: 12px; color: var(--text); }
-    .setting-sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+    .setting-sub { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
     .setting-control { flex-shrink: 0; }
 
     .gap-input { width: 60px; text-align: right; }
@@ -568,7 +572,7 @@
             <div class="setting-sub">Strip width constraints from clones so they resize freely. Turn off to keep component constraints.</div>
           </div>
           <div class="setting-control">
-            <input type="checkbox" id="clear-constraints-toggle" checked />
+            <input type="checkbox" id="clear-constraints-toggle" />
           </div>
         </div>
       </div>
@@ -641,7 +645,7 @@
 let state = {
   source: null,
   breakpoints: [],
-  settings: { gap: 120, addLabels: true, clearWidthConstraints: true },
+  settings: { gap: 120, addLabels: true, clearWidthConstraints: false },
   variableOptions: [],
   modeOptions: [],           // Every (collection, mode) pair from collections with >1 mode
   defaultBreakpoints: null,  // User-saved baseline (null until they save one)
@@ -1586,7 +1590,7 @@ document.addEventListener('mousedown', e => {
 function renderSettings() {
   document.getElementById('gap-input').value = state.settings.gap ?? 120;
   document.getElementById('labels-toggle').checked = state.settings.addLabels !== false;
-  document.getElementById('clear-constraints-toggle').checked = state.settings.clearWidthConstraints !== false;
+  document.getElementById('clear-constraints-toggle').checked = state.settings.clearWidthConstraints === true;
 
   const varCount = state.variableOptions.length;
   const modeCount = state.modeOptions.length;
