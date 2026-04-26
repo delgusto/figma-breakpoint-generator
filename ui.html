@@ -669,6 +669,25 @@ function getActiveVariantSchema() {
   return state.variantCandidates[0];
 }
 
+// Find the intrinsic width of the variant component matching bp.variantProps.
+// Returns null when there is no schema, no variantProps, or no exact-prop
+// match in variantSizes (e.g. user picked partial props on a multi-prop set).
+function lookupVariantWidth(bp) {
+  const schema = getActiveVariantSchema();
+  if (!schema || !schema.variantSizes || !bp.variantProps) return null;
+  const props = bp.variantProps;
+  if (!Object.keys(props).length) return null;
+  // The schema only stores variant props (the set's VARIANT-typed properties).
+  // A bp.variantProps with a strict subset still matches if every entry agrees.
+  const match = schema.variantSizes.find(entry => {
+    for (const key of Object.keys(props)) {
+      if (entry.props[key] !== props[key]) return false;
+    }
+    return true;
+  });
+  return match ? match.width : null;
+}
+
 // ─── Messaging ────────────────────────────────────────────────────────────────
 
 function send(msg) {
@@ -924,8 +943,15 @@ function renderBpList() {
     row.className = 'bp-row' + (bp.enabled ? '' : ' disabled');
 
     const link = getSelectedLink(bp);
+    const hasVariant = bp.variantProps && Object.keys(bp.variantProps).length;
     let widthDisplay, tag = '';
-    if (link && link.kind === 'variable') {
+    // Variant takes precedence over the static/linked width because the
+    // generate loop runs variant-only when variantProps is set. So the px
+    // shown here must come from the variant's intrinsic width — not bp.width.
+    if (hasVariant) {
+      const w = lookupVariantWidth(bp);
+      widthDisplay = w !== null ? `${w}px` : '—';
+    } else if (link && link.kind === 'variable') {
       widthDisplay = link.value !== null ? `~${link.value}px` : 'library';
       tag = link.isLibrary ? 'lib' : 'var';
     } else if (link && link.kind === 'mode') {
@@ -934,8 +960,6 @@ function renderBpList() {
     } else {
       widthDisplay = `${bp.width}px`;
     }
-
-    const hasVariant = bp.variantProps && Object.keys(bp.variantProps).length;
     row.innerHTML = `
       <label style="display:contents; cursor:pointer;">
         <input type="checkbox" class="bp-toggle" data-index="${i}" ${bp.enabled ? 'checked' : ''} />
@@ -989,9 +1013,17 @@ function renderSettingsBpList() {
     const isModeLinked = !!selected && selected.kind === 'mode';
     const hasVariantSet = schema && bp.variantProps && Object.keys(bp.variantProps).length;
     const linked = isModeLinked || hasVariantSet;
-    const displayWidth = isModeLinked
-      ? (selected.value != null ? selected.value : '')
-      : bp.width;
+    let displayWidth;
+    if (isModeLinked) {
+      displayWidth = selected.value != null ? selected.value : '';
+    } else if (hasVariantSet) {
+      // Show the variant component's intrinsic width as a read-only hint so
+      // the user can sanity-check what the picked variant will produce.
+      const vw = lookupVariantWidth(bp);
+      displayWidth = vw !== null ? vw : '';
+    } else {
+      displayWidth = bp.width;
+    }
 
     card.innerHTML = `
       <div class="settings-bp-top">

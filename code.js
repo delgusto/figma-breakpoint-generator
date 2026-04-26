@@ -363,10 +363,31 @@ function buildSchemaForSet(set) {
     }
   }
   if (!properties.length) return null;
+
+  // Walk each component in the set and capture its intrinsic width keyed by
+  // its variantProperties combo. The UI uses this to display the *actual*
+  // width of the picked variant on the Generate tab (rather than the
+  // misleading static bp.width input that the user can't drive when a
+  // variant is selected).
+  const variantSizes = [];
+  if ('children' in set && set.children) {
+    for (const child of set.children) {
+      if (child.type !== 'COMPONENT') continue;
+      const vProps = child.variantProperties || null;
+      if (!vProps) continue;
+      variantSizes.push({
+        props: Object.assign({}, vProps),
+        width: Math.round(child.width),
+        height: Math.round(child.height),
+      });
+    }
+  }
+
   return {
     componentSetId: set.id,
     componentSetName: set.name,
     properties: properties,
+    variantSizes: variantSizes,
   };
 }
 
