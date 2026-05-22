@@ -182,10 +182,47 @@
     .settings-bp-remove:hover { color: var(--red); background: rgba(224,82,82,0.12); }
     .settings-bp-remove svg { display: block; }
     .var-badge {
-      font-size: 10px; color: var(--accent);
-      background: var(--accent-a); border-radius: 3px;
+      font-size: 10px; font-weight: 600; color: var(--accent-ink);
+      background: var(--accent); border-radius: 3px;
       padding: 2px 6px; white-space: nowrap; flex-shrink: 0;
     }
+
+    /* ── Variant row inside each settings bp card ── */
+    .settings-bp-variant-row {
+      display: flex; align-items: center; gap: 6px;
+      margin-top: 6px;
+    }
+    .settings-bp-variant-label {
+      font-size: 10px; color: var(--muted);
+      flex-shrink: 0; white-space: nowrap;
+      max-width: 40%; overflow: hidden; text-overflow: ellipsis;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .bp-variant-select {
+      flex: 1; font-size: 11px; padding: 4px 6px;
+      min-width: 0;
+    }
+
+    /* Banner shown above settings list when a variant-driven instance is selected */
+    .variant-banner {
+      background: var(--accent-a); color: var(--text);
+      border: 1px solid rgba(255,204,0,0.35);
+      border-radius: var(--radius-sm);
+      padding: 6px 10px; margin-bottom: 8px;
+      font-size: 11px; line-height: 1.4;
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
+    .variant-banner-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .variant-banner button {
+      background: var(--accent); border: 1px solid var(--accent);
+      color: var(--accent-ink); font-size: 11px; font-weight: 600;
+      padding: 5px 10px; line-height: 1.2;
+      border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap;
+      flex-shrink: 0;
+      /* Match the height of the adjacent <select> so the chip aligns flush. */
+      height: 26px; box-sizing: border-box;
+    }
+    .variant-banner button:hover { opacity: 0.85; }
 
     /* ── Inputs ── */
     input[type="text"], input[type="number"], select {
@@ -283,14 +320,18 @@
     .setting-row {
       display: flex; align-items: center; justify-content: space-between;
       padding: 8px 0; border-bottom: 1px solid var(--border2);
+      gap: 12px;
     }
+    /* Label container: flex:1 + min-width:0 lets long sub-text wrap inside the
+       narrow plugin panel instead of forcing horizontal overflow. */
+    .setting-row > div:first-child { flex: 1 1 auto; min-width: 0; }
     .setting-row.stacked {
       flex-direction: column; align-items: stretch; gap: 6px;
     }
     .setting-row.stacked .setting-control { width: 100%; }
     .setting-row:last-child { border-bottom: none; }
     .setting-label { font-size: 12px; color: var(--text); }
-    .setting-sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+    .setting-sub { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
     .setting-control { flex-shrink: 0; }
 
     .gap-input { width: 60px; text-align: right; }
@@ -320,8 +361,9 @@
 
     /* ── Var tag inline ── */
     .linked-tag {
-      font-size: 10px; background: var(--accent-a);
-      color: var(--accent); border-radius: 3px;
+      font-size: 10px; font-weight: 600;
+      background: var(--accent); color: var(--accent-ink);
+      border-radius: 3px;
       padding: 1px 5px; margin-left: 4px;
     }
 
@@ -498,6 +540,9 @@
 
       <!-- Breakpoints editor -->
       <div class="section-label">Breakpoints</div>
+      <!-- Populated by renderVariantBanner() when the selection contains
+           variant-backed instances. Holds the target picker + auto-match. -->
+      <div id="variant-banner" class="variant-banner" style="display:none"></div>
       <div id="settings-bp-list"></div>
       <button class="btn-add" id="add-bp-btn">+ Add breakpoint</button>
 
@@ -519,6 +564,15 @@
           </div>
           <div class="setting-control">
             <input type="checkbox" id="labels-toggle" checked />
+          </div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Remove min/max width</div>
+            <div class="setting-sub">Strip width constraints from clones so they resize freely. Turn off to keep component constraints.</div>
+          </div>
+          <div class="setting-control">
+            <input type="checkbox" id="clear-constraints-toggle" />
           </div>
         </div>
       </div>
@@ -591,14 +645,48 @@
 let state = {
   source: null,
   breakpoints: [],
-  settings: { gap: 120, addLabels: true },
+  settings: { gap: 120, addLabels: true, clearWidthConstraints: false },
   variableOptions: [],
   modeOptions: [],           // Every (collection, mode) pair from collections with >1 mode
   defaultBreakpoints: null,  // User-saved baseline (null until they save one)
   preferredLibrary: null,    // Library name to pin to top of the dropdown
   filterToLibrary: false,    // When true, hide libraries other than preferredLibrary
   loadingTokens: true,       // True while the sandbox is fetching variables + modes
+  variantCandidates: [],     // All component sets found in the selection, ranked by breakpoint affinity + shallowness
+  variantTargetId: null,     // Which candidate the user has picked as the target (null = top-ranked)
+  lastVariantSchemaId: null, // Component set id we last auto-matched against, used to skip redundant re-match passes
 };
+
+// Derive the currently active variant schema from the candidates list + the
+// user's target pick. Returns null when nothing is selectable.
+function getActiveVariantSchema() {
+  if (!state.variantCandidates.length) return null;
+  const id = state.variantTargetId;
+  if (id) {
+    const match = state.variantCandidates.find(c => c.componentSetId === id);
+    if (match) return match;
+  }
+  return state.variantCandidates[0];
+}
+
+// Find the intrinsic width of the variant component matching bp.variantProps.
+// Returns null when there is no schema, no variantProps, or no exact-prop
+// match in variantSizes (e.g. user picked partial props on a multi-prop set).
+function lookupVariantWidth(bp) {
+  const schema = getActiveVariantSchema();
+  if (!schema || !schema.variantSizes || !bp.variantProps) return null;
+  const props = bp.variantProps;
+  if (!Object.keys(props).length) return null;
+  // The schema only stores variant props (the set's VARIANT-typed properties).
+  // A bp.variantProps with a strict subset still matches if every entry agrees.
+  const match = schema.variantSizes.find(entry => {
+    for (const key of Object.keys(props)) {
+      if (entry.props[key] !== props[key]) return false;
+    }
+    return true;
+  });
+  return match ? match.width : null;
+}
 
 // ─── Messaging ────────────────────────────────────────────────────────────────
 
@@ -619,6 +707,7 @@ window.onmessage = (event) => {
       state.defaultBreakpoints = msg.defaultBreakpoints || null;
       state.preferredLibrary = msg.preferredLibrary || null;
       state.filterToLibrary = !!msg.filterToLibrary;
+      state.variantTargetId = msg.variantTargetId || null;
       state.loadingTokens = false;
       renderAll();
       refreshOpenPopups();
@@ -626,7 +715,18 @@ window.onmessage = (event) => {
 
     case 'selection':
       state.source = msg.source;
+      state.variantCandidates = (msg.variantSchema && msg.variantSchema.candidates) || [];
+      // If previously-selected target is still in the new candidate list,
+      // keep it; otherwise fall back to the top-ranked candidate so the user
+      // sees something sensible after changing selection.
+      if (state.variantTargetId) {
+        const stillThere = state.variantCandidates.some(c => c.componentSetId === state.variantTargetId);
+        if (!stillThere) state.variantTargetId = null;
+      }
+      syncVariantPropsWithSchema();
       renderSource();
+      renderSettingsBpList();
+      renderBpList();
       updateGenerateBtn();
       break;
 
@@ -666,6 +766,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (wasOnSettings && target !== 'settings') {
       state.settings.gap = parseInt(document.getElementById('gap-input').value) || 120;
       state.settings.addLabels = document.getElementById('labels-toggle').checked;
+      state.settings.clearWidthConstraints = document.getElementById('clear-constraints-toggle').checked;
       send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
     }
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === target));
@@ -675,6 +776,136 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (target === 'main') { renderBpList(); updateGenerateBtn(); }
   });
 });
+
+// ─── Variant schema helpers ───────────────────────────────────────────────────
+
+// Reconcile bp.variantProps with the current schema. Drops entries that
+// reference a property or option that no longer exists, and on first encounter
+// of a new schema fills in any unset property with a case-insensitive label
+// match. Returns true if anything changed.
+function syncVariantPropsWithSchema() {
+  const schema = getActiveVariantSchema();
+  if (!schema) return false;
+
+  const schemaIdChanged = state.lastVariantSchemaId !== schema.componentSetId;
+  let changed = false;
+
+  for (const bp of state.breakpoints) {
+    const current = bp.variantProps ? Object.assign({}, bp.variantProps) : {};
+
+    // Drop stale entries — property removed or option no longer in the set.
+    for (const key of Object.keys(current)) {
+      const prop = schema.properties.find(p => p.name === key);
+      if (!prop || !prop.options.includes(current[key])) delete current[key];
+    }
+
+    // Auto-match unset properties by case-insensitive label match.
+    for (const prop of schema.properties) {
+      if (current[prop.name]) continue;
+      const match = prop.options.find(o => String(o).toLowerCase() === String(bp.label || '').toLowerCase());
+      if (match) current[prop.name] = match;
+    }
+
+    const next = Object.keys(current).length ? current : null;
+    const before = bp.variantProps ? JSON.stringify(bp.variantProps) : 'null';
+    const after = next ? JSON.stringify(next) : 'null';
+    if (before !== after) {
+      bp.variantProps = next;
+      changed = true;
+    }
+  }
+
+  state.lastVariantSchemaId = schema.componentSetId;
+  if (changed && schemaIdChanged) {
+    // Only auto-save on first detection of a new schema so we don't clobber
+    // intentional user clearings mid-session.
+    send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+  }
+  return changed;
+}
+
+// Force re-run auto-match against the current schema, overwriting any user
+// entries with a fresh label match. Used by the "Auto-match" banner button.
+function forceAutoMatchVariants() {
+  const schema = getActiveVariantSchema();
+  if (!schema) return;
+  for (const bp of state.breakpoints) {
+    const next = {};
+    for (const prop of schema.properties) {
+      const match = prop.options.find(o => String(o).toLowerCase() === String(bp.label || '').toLowerCase());
+      if (match) next[prop.name] = match;
+    }
+    bp.variantProps = Object.keys(next).length ? next : null;
+  }
+  send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+  renderSettingsBpList();
+  renderBpList();
+}
+
+// Build the per-bp variant row: a <select> for each VARIANT property in the schema.
+function buildVariantRowHtml(schema, bp, i) {
+  const current = bp.variantProps || {};
+  const selects = schema.properties.map(prop => {
+    const options = ['<option value="">— no change —</option>'].concat(
+      prop.options.map(opt =>
+        `<option value="${escHtml(opt)}" ${current[prop.name] === opt ? 'selected' : ''}>${escHtml(opt)}</option>`
+      )
+    ).join('');
+    return `<select class="bp-variant-select" data-index="${i}" data-prop="${escHtml(prop.name)}" title="${escHtml(prop.name)}">${options}</select>`;
+  }).join('');
+  return `
+    <div class="settings-bp-variant-row">
+      <span class="settings-bp-variant-label" title="${escHtml(schema.componentSetName)}">Variant</span>
+      ${selects}
+    </div>
+  `;
+}
+
+function renderVariantBanner() {
+  const banner = document.getElementById('variant-banner');
+  if (!banner) return;
+  const candidates = state.variantCandidates;
+  if (!candidates.length) { banner.style.display = 'none'; banner.innerHTML = ''; return; }
+
+  const active = getActiveVariantSchema();
+  const activeId = active ? active.componentSetId : null;
+
+  // Build the target picker — one <option> per candidate component set. We
+  // annotate each with its nested instance count + whether it looks like a
+  // breakpoint set (affinity > 0) so the user can pick confidently when the
+  // auto-pick grabs the wrong one.
+  const options = candidates.map(c => {
+    const tag = c.breakpointAffinity > 0 ? ' · breakpoint-like' : '';
+    const label = `${c.componentSetName} (${c.count})${tag}`;
+    return `<option value="${escHtml(c.componentSetId)}" ${c.componentSetId === activeId ? 'selected' : ''}>${escHtml(label)}</option>`;
+  }).join('');
+
+  banner.innerHTML = `
+    <div style="display:flex; flex-direction:column; gap:6px; flex:1; min-width:0;">
+      <div style="font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em;">Variant target</div>
+      <select id="variant-target-select" style="font-size:11px;">${options}</select>
+    </div>
+    <button type="button" id="variant-automatch-btn" style="align-self:flex-end;">Auto-match</button>
+  `;
+  banner.style.display = 'flex';
+  banner.style.alignItems = 'flex-start';
+
+  const select = document.getElementById('variant-target-select');
+  if (select) {
+    select.addEventListener('change', e => {
+      state.variantTargetId = e.target.value;
+      // New target might have different property names / options — re-run
+      // auto-match so each bp row fills in sensible defaults for the pick.
+      state.lastVariantSchemaId = null;
+      syncVariantPropsWithSchema();
+      send({ type: 'save-variant-target', variantTargetId: state.variantTargetId });
+      renderSettingsBpList();
+      renderBpList();
+    });
+  }
+  const btn = document.getElementById('variant-automatch-btn');
+  if (btn) btn.addEventListener('click', forceAutoMatchVariants);
+}
 
 // ─── Render: source card ──────────────────────────────────────────────────────
 
@@ -712,8 +943,15 @@ function renderBpList() {
     row.className = 'bp-row' + (bp.enabled ? '' : ' disabled');
 
     const link = getSelectedLink(bp);
+    const hasVariant = bp.variantProps && Object.keys(bp.variantProps).length;
     let widthDisplay, tag = '';
-    if (link && link.kind === 'variable') {
+    // Variant takes precedence over the static/linked width because the
+    // generate loop runs variant-only when variantProps is set. So the px
+    // shown here must come from the variant's intrinsic width — not bp.width.
+    if (hasVariant) {
+      const w = lookupVariantWidth(bp);
+      widthDisplay = w !== null ? `${w}px` : '—';
+    } else if (link && link.kind === 'variable') {
       widthDisplay = link.value !== null ? `~${link.value}px` : 'library';
       tag = link.isLibrary ? 'lib' : 'var';
     } else if (link && link.kind === 'mode') {
@@ -722,13 +960,13 @@ function renderBpList() {
     } else {
       widthDisplay = `${bp.width}px`;
     }
-
     row.innerHTML = `
       <label style="display:contents; cursor:pointer;">
         <input type="checkbox" class="bp-toggle" data-index="${i}" ${bp.enabled ? 'checked' : ''} />
         <span class="bp-label-cell">
           ${escHtml(bp.label)}
           ${tag ? `<span class="linked-tag">${tag}</span>` : ''}
+          ${hasVariant ? `<span class="linked-tag">variant</span>` : ''}
         </span>
         <span class="bp-width-cell" style="text-align:right;">${escHtml(widthDisplay)}</span>
       </label>
@@ -753,23 +991,39 @@ function renderBpList() {
 // ─── Render: settings breakpoint editor ──────────────────────────────────────
 
 function renderSettingsBpList() {
+  renderVariantBanner();
   const list = document.getElementById('settings-bp-list');
   list.innerHTML = '';
+
+  const schema = getActiveVariantSchema();
 
   state.breakpoints.forEach((bp, i) => {
     const card = document.createElement('div');
     card.className = 'settings-bp-row';
+    // Drop handler reads this to find the target index — keep it on the card
+    // (handle has its own data-index for dragstart, but the card is what
+    // closest() returns during dragover/drop).
+    card.dataset.index = String(i);
 
     const selected = getSelectedLink(bp);
     const displayText = linkDisplayText(selected);
 
-    // Mode-linked: disable the width field. If the mode has a resolved width,
-    // show it greyed as a reference; otherwise leave empty.
+    // Mode-linked or variant-set: disable the width field. Variant switching
+    // and width are mutually exclusive per row — variant wins if both are set.
     const isModeLinked = !!selected && selected.kind === 'mode';
-    const linked = isModeLinked;
-    const displayWidth = isModeLinked
-      ? (selected.value != null ? selected.value : '')
-      : bp.width;
+    const hasVariantSet = schema && bp.variantProps && Object.keys(bp.variantProps).length;
+    const linked = isModeLinked || hasVariantSet;
+    let displayWidth;
+    if (isModeLinked) {
+      displayWidth = selected.value != null ? selected.value : '';
+    } else if (hasVariantSet) {
+      // Show the variant component's intrinsic width as a read-only hint so
+      // the user can sanity-check what the picked variant will produce.
+      const vw = lookupVariantWidth(bp);
+      displayWidth = vw !== null ? vw : '';
+    } else {
+      displayWidth = bp.width;
+    }
 
     card.innerHTML = `
       <div class="settings-bp-top">
@@ -802,6 +1056,7 @@ function renderSettingsBpList() {
         </button>
         <div class="var-combobox-popup" data-index="${i}"></div>
       </div>
+      ${schema ? buildVariantRowHtml(schema, bp, i) : ''}
     `;
 
     list.appendChild(card);
@@ -855,6 +1110,23 @@ function renderSettingsBpList() {
   list.querySelectorAll('.var-combobox').forEach(el => {
     const i = parseInt(el.dataset.index);
     wireCombobox(el, i);
+  });
+
+  // Variant property dropdowns — write through to bp.variantProps
+  list.querySelectorAll('.bp-variant-select').forEach(el => {
+    el.addEventListener('change', e => {
+      const i = parseInt(e.target.dataset.index);
+      const prop = e.target.dataset.prop;
+      const bp = state.breakpoints[i];
+      const next = bp.variantProps ? Object.assign({}, bp.variantProps) : {};
+      if (e.target.value) {
+        next[prop] = e.target.value;
+      } else {
+        delete next[prop];
+      }
+      bp.variantProps = Object.keys(next).length ? next : null;
+      persistAndSync();
+    });
   });
 
   list.querySelectorAll('.remove-bp-btn').forEach(el => {
@@ -1350,6 +1622,7 @@ document.addEventListener('mousedown', e => {
 function renderSettings() {
   document.getElementById('gap-input').value = state.settings.gap ?? 120;
   document.getElementById('labels-toggle').checked = state.settings.addLabels !== false;
+  document.getElementById('clear-constraints-toggle').checked = state.settings.clearWidthConstraints === true;
 
   const varCount = state.variableOptions.length;
   const modeCount = state.modeOptions.length;
@@ -1460,13 +1733,18 @@ document.getElementById('generate-btn').addEventListener('click', () => {
       sourceId: state.source.id,
       breakpoints: state.breakpoints,
       settings: state.settings,
+      variantTargetId: (getActiveVariantSchema() || {}).componentSetId || null,
     },
   });
 });
 
+// The auto-match button lives inside #variant-banner, which is re-rendered
+// by renderVariantBanner — bind there, not here.
+
 document.getElementById('save-btn').addEventListener('click', () => {
   state.settings.gap = parseInt(document.getElementById('gap-input').value) || 120;
   state.settings.addLabels = document.getElementById('labels-toggle').checked;
+  state.settings.clearWidthConstraints = document.getElementById('clear-constraints-toggle').checked;
   send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
   // Sync back to main panel
   renderBpList();
