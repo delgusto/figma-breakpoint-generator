@@ -44,13 +44,14 @@ const DEFAULT_SETTINGS = {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 async function init() {
-  const [savedBreakpoints, savedSettings, defaultBreakpoints, preferredLibrary, filterToLibrary, variantTargetId] = await Promise.all([
+  const [savedBreakpoints, savedSettings, defaultBreakpoints, preferredLibrary, filterToLibrary, variantTargetId, variantTargetKey] = await Promise.all([
     figma.clientStorage.getAsync('breakpoints'),
     figma.clientStorage.getAsync('settings'),
     figma.clientStorage.getAsync('defaultBreakpoints'),
     figma.clientStorage.getAsync('preferredLibrary'),
     figma.clientStorage.getAsync('filterToLibrary'),
-    figma.clientStorage.getAsync('variantTargetId'),
+    figma.clientStorage.getAsync('variantTargetId'),   // legacy: local node id
+    figma.clientStorage.getAsync('variantTargetKey'),  // stable library key
   ]);
 
   const breakpoints = savedBreakpoints || DEFAULT_BREAKPOINTS;
@@ -72,6 +73,7 @@ async function init() {
     preferredLibrary: preferredLibrary || null,
     filterToLibrary: !!filterToLibrary,
     variantTargetId: variantTargetId || null,
+    variantTargetKey: variantTargetKey || null,
   });
   sendSelection();
 }
@@ -383,8 +385,14 @@ function buildSchemaForSet(set) {
     }
   }
 
+  // `id` is the local node id (changes per file for library components).
+  // `key` is the library publication key — stable across files. We expose
+  // both: id is used to match instances inside the clone at apply time,
+  // key is used by the UI as the stable storage key for per-set variant
+  // assignments so picks survive across files / re-imports.
   return {
     componentSetId: set.id,
+    componentSetKey: set.key || '',
     componentSetName: set.name,
     properties: properties,
     variantSizes: variantSizes,
@@ -477,7 +485,10 @@ figma.ui.onmessage = async (msg) => {
       break;
 
     case 'save-variant-target':
-      await figma.clientStorage.setAsync('variantTargetId', msg.variantTargetId || null);
+      await Promise.all([
+        figma.clientStorage.setAsync('variantTargetId', msg.variantTargetId || null),
+        figma.clientStorage.setAsync('variantTargetKey', msg.variantTargetKey || null),
+      ]);
       break;
 
     case 'reset-settings': {
@@ -599,19 +610,18 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
     }
 
     // Either / or per breakpoint:
-    //   variantPropsBySet[variantTargetId] set → swap component variant, leave width alone.
-    //   otherwise                              → apply width/mode logic as before.
+    //   bp.variantProps set → swap component variant, leave width alone.
+    //   otherwise           → apply width/mode logic as before.
     //
-    // When variant mode is chosen, we intentionally skip resize because the
-    // swapped variant is expected to carry its own width tokens (matching the
-    // breakpoint). Variant picks are now keyed by component-set id so the user
-    // can flip between multiple variant sets without losing their per-set
-    // assignments; we look up only the slot for the active target.
-    const variantPropsForTarget = (variantTargetId && bp.variantPropsBySet && bp.variantPropsBySet[variantTargetId]) || null;
-    const hasVariant = variantPropsForTarget && Object.keys(variantPropsForTarget).length;
+    // The UI is responsible for flattening its per-set storage
+    // (variantPropsBySet keyed by stable library key) into bp.variantProps
+    // for the active target before sending the payload — that way this loop
+    // does not need to know about storage keys, just the local node id used
+    // to match instances inside the clone (variantTargetId).
+    const hasVariant = variantTargetId && bp.variantProps && Object.keys(bp.variantProps).length;
 
     if (hasVariant) {
-      applyVariantProps(clone, variantPropsForTarget, variantTargetId);
+      applyVariantProps(clone, bp.variantProps, variantTargetId);
     } else {
       const modeLinked = bp.modeId && (bp.modeCollectionKey || bp.modeCollectionId);
       let appliedViaMode = false;
