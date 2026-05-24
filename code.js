@@ -351,7 +351,22 @@ function countBreakpointAffinity(properties) {
   return hits;
 }
 
+// Per-session cache of computed schema by component-set id. Building the
+// schema walks every variant component in the set (for variantSizes), which
+// is wasted work when the same set re-appears on every selection change in a
+// busy file. Set definitions are stable for the session — if the user edits
+// the set we accept a stale cache until the plugin is reopened.
+const SCHEMA_CACHE = new Map();
+
 function buildSchemaForSet(set) {
+  const cached = SCHEMA_CACHE.get(set.id);
+  if (cached) return cached;
+  const built = buildSchemaForSetUncached(set);
+  if (built) SCHEMA_CACHE.set(set.id, built);
+  return built;
+}
+
+function buildSchemaForSetUncached(set) {
   const defs = set.componentPropertyDefinitions || {};
   const properties = [];
   for (const key of Object.keys(defs)) {
@@ -400,13 +415,20 @@ function buildSchemaForSet(set) {
 }
 
 // Breadth-first walk so we can track depth. Figma's findAll doesn't give us
-// depth, so we do it manually.
+// depth, so we do it manually. Capped at MAX_DETECT_DEPTH to keep selection
+// changes responsive on large frames — the variant set we care about is
+// almost always within a few layers of the selected node; descending into
+// every leaf node of a deeply nested layout just to find buttons that we'd
+// rank low anyway is wasted work that lags Figma during selection drags.
+const MAX_DETECT_DEPTH = 8;
+
 function collectInstancesWithDepth(root) {
   const results = [];
   const queue = [{ node: root, depth: 0 }];
   while (queue.length) {
     const { node, depth } = queue.shift();
     if (node.type === 'INSTANCE') results.push({ inst: node, depth });
+    if (depth >= MAX_DETECT_DEPTH) continue;
     if ('children' in node && node.children) {
       for (const child of node.children) queue.push({ node: child, depth: depth + 1 });
     }
@@ -467,7 +489,19 @@ function detectVariantSchema(node) {
   };
 }
 
-figma.on('selectionchange', sendSelection);
+// Debounce `selectionchange` — Figma fires it many times during a drag-select
+// or rapid clicking, and detectVariantSchema is the most expensive thing the
+// plugin does on the hot path. Coalescing to one run per 200ms idle window
+// keeps the UI responsive without noticeably delaying single clicks.
+let selectionDebounceTimer = null;
+function sendSelectionDebounced() {
+  if (selectionDebounceTimer) clearTimeout(selectionDebounceTimer);
+  selectionDebounceTimer = setTimeout(() => {
+    selectionDebounceTimer = null;
+    sendSelection();
+  }, 200);
+}
+figma.on('selectionchange', sendSelectionDebounced);
 
 // ─── Message router ───────────────────────────────────────────────────────────
 
