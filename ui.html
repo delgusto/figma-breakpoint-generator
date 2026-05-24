@@ -653,32 +653,89 @@ let state = {
   filterToLibrary: false,    // When true, hide libraries other than preferredLibrary
   loadingTokens: true,       // True while the sandbox is fetching variables + modes
   variantCandidates: [],     // All component sets found in the selection, ranked by breakpoint affinity + shallowness
-  variantTargetId: null,     // Which candidate the user has picked as the target (null = top-ranked)
-  lastVariantSchemaId: null, // Component set id we last auto-matched against, used to skip redundant re-match passes
+  variantTargetKey: null,    // Stable library key (or local node id fallback) of the user's chosen target — survives across files
+  lastVariantSchemaKey: null,// Last set's stable key we synced against, used to skip redundant re-sync passes
 };
+
+// Stable storage key for a candidate component set. Library components have a
+// `componentSetKey` (publication key) that stays the same across files; local
+// sets fall back to their node id (also stable within a file). This is what
+// bp.variantPropsBySet is keyed by, and what we persist as variantTargetKey.
+function getSetStableKey(candidate) {
+  if (!candidate) return null;
+  return candidate.componentSetKey || candidate.componentSetId;
+}
 
 // Derive the currently active variant schema from the candidates list + the
 // user's target pick. Returns null when nothing is selectable.
 function getActiveVariantSchema() {
   if (!state.variantCandidates.length) return null;
-  const id = state.variantTargetId;
-  if (id) {
-    const match = state.variantCandidates.find(c => c.componentSetId === id);
+  const key = state.variantTargetKey;
+  if (key) {
+    const match = state.variantCandidates.find(c => getSetStableKey(c) === key);
     if (match) return match;
   }
   return state.variantCandidates[0];
 }
 
-// Find the intrinsic width of the variant component matching bp.variantProps.
-// Returns null when there is no schema, no variantProps, or no exact-prop
-// match in variantSizes (e.g. user picked partial props on a multi-prop set).
+// Per-breakpoint variant picks are now keyed by component-set id so the user
+// can hop between different variant sets without losing their assignments
+// each time. bp.variantPropsBySet looks like:
+//   { [componentSetId]: { propName: 'Mobile', ... }, ... }
+// The legacy bp.variantProps shape (one flat object per bp) is migrated on
+// init when an old saved value is found.
+function getBpVariantProps(bp, setId) {
+  if (!bp || !setId) return null;
+  const all = bp.variantPropsBySet;
+  if (!all || typeof all !== 'object') return null;
+  const slot = all[setId];
+  return (slot && typeof slot === 'object' && Object.keys(slot).length) ? slot : null;
+}
+
+function setBpVariantProps(bp, setId, props) {
+  if (!bp || !setId) return;
+  const all = bp.variantPropsBySet && typeof bp.variantPropsBySet === 'object'
+    ? Object.assign({}, bp.variantPropsBySet)
+    : {};
+  if (props && Object.keys(props).length) {
+    all[setId] = Object.assign({}, props);
+  } else {
+    delete all[setId];
+  }
+  bp.variantPropsBySet = Object.keys(all).length ? all : null;
+}
+
+// Walk a breakpoint list and convert any legacy bp.variantProps into the new
+// variantPropsBySet shape, attributed to whichever set we have a hint for
+// (variantTargetId from clientStorage). If no hint exists we drop the legacy
+// value rather than guess. Returns the same array so callers can chain.
+function migrateLegacyVariantPropsInList(list, targetIdHint) {
+  if (!Array.isArray(list)) return list;
+  for (const bp of list) {
+    if (!bp || !bp.variantProps) continue;
+    if (targetIdHint) {
+      setBpVariantProps(bp, targetIdHint, bp.variantProps);
+    }
+    delete bp.variantProps;
+  }
+  return list;
+}
+
+function migrateLegacyVariantProps(targetIdHint) {
+  // Migrate the live breakpoints AND the saved defaults snapshot so loading
+  // defaults later doesn't ship the legacy shape into state.breakpoints.
+  migrateLegacyVariantPropsInList(state.breakpoints, targetIdHint);
+  migrateLegacyVariantPropsInList(state.defaultBreakpoints, targetIdHint);
+}
+
+// Find the intrinsic width of the variant component matching the bp's saved
+// picks for the active set. Returns null when there is no schema, no saved
+// picks for the active set, or no exact-prop match in variantSizes.
 function lookupVariantWidth(bp) {
   const schema = getActiveVariantSchema();
-  if (!schema || !schema.variantSizes || !bp.variantProps) return null;
-  const props = bp.variantProps;
-  if (!Object.keys(props).length) return null;
-  // The schema only stores variant props (the set's VARIANT-typed properties).
-  // A bp.variantProps with a strict subset still matches if every entry agrees.
+  if (!schema || !schema.variantSizes) return null;
+  const props = getBpVariantProps(bp, getSetStableKey(schema));
+  if (!props || !Object.keys(props).length) return null;
   const match = schema.variantSizes.find(entry => {
     for (const key of Object.keys(props)) {
       if (entry.props[key] !== props[key]) return false;
@@ -707,8 +764,13 @@ window.onmessage = (event) => {
       state.defaultBreakpoints = msg.defaultBreakpoints || null;
       state.preferredLibrary = msg.preferredLibrary || null;
       state.filterToLibrary = !!msg.filterToLibrary;
-      state.variantTargetId = msg.variantTargetId || null;
+      state.variantTargetKey = msg.variantTargetKey || null;
       state.loadingTokens = false;
+      // Migrate legacy bp.variantProps (one flat object per bp) into the
+      // new per-set-keyed shape. We attribute it to whichever stable key we
+      // have a hint for — either the new variantTargetKey or, failing that,
+      // the legacy local node id stored as variantTargetId.
+      migrateLegacyVariantProps(state.variantTargetKey || msg.variantTargetId || null);
       renderAll();
       refreshOpenPopups();
       break;
@@ -716,13 +778,11 @@ window.onmessage = (event) => {
     case 'selection':
       state.source = msg.source;
       state.variantCandidates = (msg.variantSchema && msg.variantSchema.candidates) || [];
-      // If previously-selected target is still in the new candidate list,
-      // keep it; otherwise fall back to the top-ranked candidate so the user
-      // sees something sensible after changing selection.
-      if (state.variantTargetId) {
-        const stillThere = state.variantCandidates.some(c => c.componentSetId === state.variantTargetId);
-        if (!stillThere) state.variantTargetId = null;
-      }
+      // If the previously-selected target is still among the new candidates,
+      // keep it; otherwise leave variantTargetKey as-is (persist across
+      // selections that don't include this target) so the next time the user
+      // selects the original component they get their picks back. The active
+      // schema falls back to top-ranked when the saved key doesn't match.
       syncVariantPropsWithSchema();
       renderSource();
       renderSettingsBpList();
@@ -779,63 +839,71 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 // ─── Variant schema helpers ───────────────────────────────────────────────────
 
-// Reconcile bp.variantProps with the current schema. Drops entries that
-// reference a property or option that no longer exists, and on first encounter
-// of a new schema fills in any unset property with a case-insensitive label
-// match. Returns true if anything changed.
+// Reconcile each bp's saved picks for the ACTIVE component set with that
+// schema. Drops entries whose property or option no longer exists in the
+// active set. On the first encounter of a brand-new set (no slot in
+// variantPropsBySet yet) we auto-fill by case-insensitive label match so the
+// user has sensible defaults. Picks for OTHER sets are never touched.
 function syncVariantPropsWithSchema() {
   const schema = getActiveVariantSchema();
   if (!schema) return false;
 
-  const schemaIdChanged = state.lastVariantSchemaId !== schema.componentSetId;
+  const setId = getSetStableKey(schema);
+  const schemaIdChanged = state.lastVariantSchemaKey !== setId;
   let changed = false;
 
   for (const bp of state.breakpoints) {
-    const current = bp.variantProps ? Object.assign({}, bp.variantProps) : {};
+    const existing = getBpVariantProps(bp, setId);
+    const hadSlot = existing !== null;
+    const current = existing ? Object.assign({}, existing) : {};
 
-    // Drop stale entries — property removed or option no longer in the set.
+    // Drop entries that point at properties/options the active set no longer
+    // exposes. Stale or renamed variants from previous edits get cleaned out.
     for (const key of Object.keys(current)) {
       const prop = schema.properties.find(p => p.name === key);
       if (!prop || !prop.options.includes(current[key])) delete current[key];
     }
 
-    // Auto-match unset properties by case-insensitive label match.
-    for (const prop of schema.properties) {
-      if (current[prop.name]) continue;
-      const match = prop.options.find(o => String(o).toLowerCase() === String(bp.label || '').toLowerCase());
-      if (match) current[prop.name] = match;
+    // Only auto-fill when this is the first time we've seen this set for
+    // this bp (no slot existed) — never overwrite values the user typed.
+    if (!hadSlot) {
+      for (const prop of schema.properties) {
+        if (current[prop.name]) continue;
+        const match = prop.options.find(o => String(o).toLowerCase() === String(bp.label || '').toLowerCase());
+        if (match) current[prop.name] = match;
+      }
     }
 
+    const before = existing ? JSON.stringify(existing) : 'null';
     const next = Object.keys(current).length ? current : null;
-    const before = bp.variantProps ? JSON.stringify(bp.variantProps) : 'null';
     const after = next ? JSON.stringify(next) : 'null';
     if (before !== after) {
-      bp.variantProps = next;
+      setBpVariantProps(bp, setId, next);
       changed = true;
     }
   }
 
-  state.lastVariantSchemaId = schema.componentSetId;
+  state.lastVariantSchemaKey = setId;
   if (changed && schemaIdChanged) {
-    // Only auto-save on first detection of a new schema so we don't clobber
-    // intentional user clearings mid-session.
+    // Persist the freshly auto-matched picks so they survive a plugin reopen.
     send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
   }
   return changed;
 }
 
-// Force re-run auto-match against the current schema, overwriting any user
-// entries with a fresh label match. Used by the "Auto-match" banner button.
+// Force re-run auto-match against the active set's schema, overwriting that
+// set's slot for every breakpoint. Picks for OTHER sets are untouched.
 function forceAutoMatchVariants() {
   const schema = getActiveVariantSchema();
   if (!schema) return;
+  const setId = getSetStableKey(schema);
   for (const bp of state.breakpoints) {
     const next = {};
     for (const prop of schema.properties) {
       const match = prop.options.find(o => String(o).toLowerCase() === String(bp.label || '').toLowerCase());
       if (match) next[prop.name] = match;
     }
-    bp.variantProps = Object.keys(next).length ? next : null;
+    setBpVariantProps(bp, setId, Object.keys(next).length ? next : null);
   }
   send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
   renderSettingsBpList();
@@ -844,7 +912,7 @@ function forceAutoMatchVariants() {
 
 // Build the per-bp variant row: a <select> for each VARIANT property in the schema.
 function buildVariantRowHtml(schema, bp, i) {
-  const current = bp.variantProps || {};
+  const current = getBpVariantProps(bp, getSetStableKey(schema)) || {};
   const selects = schema.properties.map(prop => {
     const options = ['<option value="">— no change —</option>'].concat(
       prop.options.map(opt =>
@@ -868,16 +936,18 @@ function renderVariantBanner() {
   if (!candidates.length) { banner.style.display = 'none'; banner.innerHTML = ''; return; }
 
   const active = getActiveVariantSchema();
-  const activeId = active ? active.componentSetId : null;
+  const activeKey = active ? getSetStableKey(active) : null;
 
   // Build the target picker — one <option> per candidate component set. We
   // annotate each with its nested instance count + whether it looks like a
   // breakpoint set (affinity > 0) so the user can pick confidently when the
-  // auto-pick grabs the wrong one.
+  // auto-pick grabs the wrong one. The option value is the stable key so the
+  // user's pick survives across files and library re-imports.
   const options = candidates.map(c => {
+    const stableKey = getSetStableKey(c);
     const tag = c.breakpointAffinity > 0 ? ' · breakpoint-like' : '';
     const label = `${c.componentSetName} (${c.count})${tag}`;
-    return `<option value="${escHtml(c.componentSetId)}" ${c.componentSetId === activeId ? 'selected' : ''}>${escHtml(label)}</option>`;
+    return `<option value="${escHtml(stableKey)}" ${stableKey === activeKey ? 'selected' : ''}>${escHtml(label)}</option>`;
   }).join('');
 
   banner.innerHTML = `
@@ -893,12 +963,19 @@ function renderVariantBanner() {
   const select = document.getElementById('variant-target-select');
   if (select) {
     select.addEventListener('change', e => {
-      state.variantTargetId = e.target.value;
+      state.variantTargetKey = e.target.value;
       // New target might have different property names / options — re-run
       // auto-match so each bp row fills in sensible defaults for the pick.
-      state.lastVariantSchemaId = null;
+      state.lastVariantSchemaKey = null;
       syncVariantPropsWithSchema();
-      send({ type: 'save-variant-target', variantTargetId: state.variantTargetId });
+      // Persist both — the stable key for cross-file restore and the local
+      // node id as a hint for legacy migration on older installs.
+      const active = getActiveVariantSchema();
+      send({
+        type: 'save-variant-target',
+        variantTargetKey: state.variantTargetKey,
+        variantTargetId: active ? active.componentSetId : null,
+      });
       renderSettingsBpList();
       renderBpList();
     });
@@ -943,7 +1020,9 @@ function renderBpList() {
     row.className = 'bp-row' + (bp.enabled ? '' : ' disabled');
 
     const link = getSelectedLink(bp);
-    const hasVariant = bp.variantProps && Object.keys(bp.variantProps).length;
+    const activeSchema = getActiveVariantSchema();
+    const activeProps = activeSchema ? getBpVariantProps(bp, getSetStableKey(activeSchema)) : null;
+    const hasVariant = !!(activeProps && Object.keys(activeProps).length);
     let widthDisplay, tag = '';
     // Variant takes precedence over the static/linked width because the
     // generate loop runs variant-only when variantProps is set. So the px
@@ -1011,7 +1090,8 @@ function renderSettingsBpList() {
     // Mode-linked or variant-set: disable the width field. Variant switching
     // and width are mutually exclusive per row — variant wins if both are set.
     const isModeLinked = !!selected && selected.kind === 'mode';
-    const hasVariantSet = schema && bp.variantProps && Object.keys(bp.variantProps).length;
+    const activeProps = schema ? getBpVariantProps(bp, getSetStableKey(schema)) : null;
+    const hasVariantSet = !!(activeProps && Object.keys(activeProps).length);
     const linked = isModeLinked || hasVariantSet;
     let displayWidth;
     if (isModeLinked) {
@@ -1112,19 +1192,23 @@ function renderSettingsBpList() {
     wireCombobox(el, i);
   });
 
-  // Variant property dropdowns — write through to bp.variantProps
+  // Variant property dropdowns — write through to bp.variantPropsBySet[activeSetId]
   list.querySelectorAll('.bp-variant-select').forEach(el => {
     el.addEventListener('change', e => {
       const i = parseInt(e.target.dataset.index);
       const prop = e.target.dataset.prop;
       const bp = state.breakpoints[i];
-      const next = bp.variantProps ? Object.assign({}, bp.variantProps) : {};
+      const activeSchema = getActiveVariantSchema();
+      if (!activeSchema) return;
+      const setId = getSetStableKey(activeSchema);
+      const current = getBpVariantProps(bp, setId) || {};
+      const next = Object.assign({}, current);
       if (e.target.value) {
         next[prop] = e.target.value;
       } else {
         delete next[prop];
       }
-      bp.variantProps = Object.keys(next).length ? next : null;
+      setBpVariantProps(bp, setId, Object.keys(next).length ? next : null);
       persistAndSync();
     });
   });
@@ -1727,13 +1811,24 @@ document.getElementById('generate-btn').addEventListener('click', () => {
   setGenerateLoading(true);
   clearTimeout(statusTimer);
   document.getElementById('status').className = 'status';
+  // The plugin sandbox reads `bp.variantProps` (the flat shape) at apply
+  // time, but we store picks under `bp.variantPropsBySet[stableKey]` so they
+  // survive across sets and files. Flatten the active slot into variantProps
+  // for the payload here, leaving the stored data untouched.
+  const activeSchema = getActiveVariantSchema();
+  const activeKey = activeSchema ? getSetStableKey(activeSchema) : null;
+  const payloadBreakpoints = state.breakpoints.map(bp => {
+    const slot = activeKey ? getBpVariantProps(bp, activeKey) : null;
+    return Object.assign({}, bp, { variantProps: slot || null });
+  });
+
   send({
     type: 'generate',
     payload: {
       sourceId: state.source.id,
-      breakpoints: state.breakpoints,
+      breakpoints: payloadBreakpoints,
       settings: state.settings,
-      variantTargetId: (getActiveVariantSchema() || {}).componentSetId || null,
+      variantTargetId: activeSchema ? activeSchema.componentSetId : null,
     },
   });
 });
