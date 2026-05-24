@@ -599,18 +599,19 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
     }
 
     // Either / or per breakpoint:
-    //   variantProps set → swap component variant, leave width alone.
-    //   otherwise         → apply width/mode logic as before.
+    //   variantPropsBySet[variantTargetId] set → swap component variant, leave width alone.
+    //   otherwise                              → apply width/mode logic as before.
     //
     // When variant mode is chosen, we intentionally skip resize because the
     // swapped variant is expected to carry its own width tokens (matching the
-    // breakpoint). If the user wants both, they should set variantProps AND a
-    // width — but by design this branch keeps the two axes orthogonal so
-    // deeply-nested library components don't fight the outer resize.
-    const hasVariant = variantTargetId && bp.variantProps && Object.keys(bp.variantProps).length;
+    // breakpoint). Variant picks are now keyed by component-set id so the user
+    // can flip between multiple variant sets without losing their per-set
+    // assignments; we look up only the slot for the active target.
+    const variantPropsForTarget = (variantTargetId && bp.variantPropsBySet && bp.variantPropsBySet[variantTargetId]) || null;
+    const hasVariant = variantPropsForTarget && Object.keys(variantPropsForTarget).length;
 
     if (hasVariant) {
-      applyVariantProps(clone, bp.variantProps, variantTargetId);
+      applyVariantProps(clone, variantPropsForTarget, variantTargetId);
     } else {
       const modeLinked = bp.modeId && (bp.modeCollectionKey || bp.modeCollectionId);
       let appliedViaMode = false;
