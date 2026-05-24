@@ -844,6 +844,25 @@ document.querySelectorAll('.tab').forEach(tab => {
 // active set. On the first encounter of a brand-new set (no slot in
 // variantPropsBySet yet) we auto-fill by case-insensitive label match so the
 // user has sensible defaults. Picks for OTHER sets are never touched.
+// Normalize a label / variant option for fuzzy comparison: take the leading
+// alphanumeric token only, lowercased. Strips trailing notes like "(1200+)"
+// or " - desktop" so "XL (1200+)" matches a breakpoint named "XL".
+function normalizeMatchToken(s) {
+  if (!s) return '';
+  const m = String(s).trim().match(/^[A-Za-z0-9]+/);
+  return m ? m[0].toLowerCase() : '';
+}
+
+function findMatchingOption(options, label) {
+  const target = normalizeMatchToken(label);
+  if (!target) return null;
+  // Prefer exact (case-insensitive) match first so unambiguous names win
+  // over fuzzy collisions when both forms exist in the same set.
+  const exact = options.find(o => String(o).toLowerCase() === String(label || '').toLowerCase());
+  if (exact) return exact;
+  return options.find(o => normalizeMatchToken(o) === target) || null;
+}
+
 function syncVariantPropsWithSchema() {
   const schema = getActiveVariantSchema();
   if (!schema) return false;
@@ -871,7 +890,7 @@ function syncVariantPropsWithSchema() {
     // when the slot already existed with partial data.)
     for (const prop of schema.properties) {
       if (current[prop.name]) continue;
-      const match = prop.options.find(o => String(o).toLowerCase() === String(bp.label || '').toLowerCase());
+      const match = findMatchingOption(prop.options, bp.label);
       if (match) current[prop.name] = match;
     }
 
@@ -901,7 +920,7 @@ function forceAutoMatchVariants() {
   for (const bp of state.breakpoints) {
     const next = {};
     for (const prop of schema.properties) {
-      const match = prop.options.find(o => String(o).toLowerCase() === String(bp.label || '').toLowerCase());
+      const match = findMatchingOption(prop.options, bp.label);
       if (match) next[prop.name] = match;
     }
     setBpVariantProps(bp, setId, Object.keys(next).length ? next : null);
