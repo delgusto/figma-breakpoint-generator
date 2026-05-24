@@ -696,18 +696,27 @@ function setBpVariantProps(bp, setId, props) {
   bp.variantPropsBySet = Object.keys(all).length ? all : null;
 }
 
-// Walk every breakpoint and convert a legacy bp.variantProps into the new
+// Walk a breakpoint list and convert any legacy bp.variantProps into the new
 // variantPropsBySet shape, attributed to whichever set we have a hint for
 // (variantTargetId from clientStorage). If no hint exists we drop the legacy
-// value rather than guess.
-function migrateLegacyVariantProps(targetIdHint) {
-  for (const bp of state.breakpoints) {
-    if (!bp.variantProps) continue;
+// value rather than guess. Returns the same array so callers can chain.
+function migrateLegacyVariantPropsInList(list, targetIdHint) {
+  if (!Array.isArray(list)) return list;
+  for (const bp of list) {
+    if (!bp || !bp.variantProps) continue;
     if (targetIdHint) {
       setBpVariantProps(bp, targetIdHint, bp.variantProps);
     }
     delete bp.variantProps;
   }
+  return list;
+}
+
+function migrateLegacyVariantProps(targetIdHint) {
+  // Migrate the live breakpoints AND the saved defaults snapshot so loading
+  // defaults later doesn't ship the legacy shape into state.breakpoints.
+  migrateLegacyVariantPropsInList(state.breakpoints, targetIdHint);
+  migrateLegacyVariantPropsInList(state.defaultBreakpoints, targetIdHint);
 }
 
 // Find the intrinsic width of the variant component matching the bp's saved
