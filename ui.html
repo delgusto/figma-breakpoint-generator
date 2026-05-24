@@ -854,7 +854,6 @@ function syncVariantPropsWithSchema() {
 
   for (const bp of state.breakpoints) {
     const existing = getBpVariantProps(bp, setId);
-    const hadSlot = existing !== null;
     const current = existing ? Object.assign({}, existing) : {};
 
     // Drop entries that point at properties/options the active set no longer
@@ -864,14 +863,16 @@ function syncVariantPropsWithSchema() {
       if (!prop || !prop.options.includes(current[key])) delete current[key];
     }
 
-    // Only auto-fill when this is the first time we've seen this set for
-    // this bp (no slot existed) — never overwrite values the user typed.
-    if (!hadSlot) {
-      for (const prop of schema.properties) {
-        if (current[prop.name]) continue;
-        const match = prop.options.find(o => String(o).toLowerCase() === String(bp.label || '').toLowerCase());
-        if (match) current[prop.name] = match;
-      }
+    // Auto-fill any UNSET property by case-insensitive label match. The
+    // inner `if (current[prop.name]) continue` is what protects manual
+    // picks from being overwritten — so we run this every sync, not only
+    // on the first encounter of the set. (An earlier guard limited this
+    // to "first encounter only", which broke auto-match on second visits
+    // when the slot already existed with partial data.)
+    for (const prop of schema.properties) {
+      if (current[prop.name]) continue;
+      const match = prop.options.find(o => String(o).toLowerCase() === String(bp.label || '').toLowerCase());
+      if (match) current[prop.name] = match;
     }
 
     const before = existing ? JSON.stringify(existing) : 'null';
