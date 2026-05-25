@@ -202,6 +202,16 @@
       flex: 1; font-size: 11px; padding: 4px 6px;
       min-width: 0;
     }
+    .bp-variant-clear {
+      flex-shrink: 0;
+      background: transparent; color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 10px; padding: 3px 7px;
+      cursor: pointer;
+      transition: color 0.12s, border-color 0.12s;
+    }
+    .bp-variant-clear:hover { color: var(--red); border-color: rgba(224,82,82,0.5); }
 
     /* Banner shown above settings list when a variant-driven instance is selected */
     .variant-banner {
@@ -503,10 +513,11 @@
       <!-- Source frame -->
       <div id="source-card" class="source-card empty">
         <div id="source-dot" class="source-dot empty"></div>
-        <div>
+        <div style="flex:1; min-width:0;">
           <div id="source-name" class="source-hint">Select a frame, component or instance</div>
           <div id="source-meta" class="source-meta" style="display:none;"></div>
         </div>
+        <button type="button" id="refresh-selection-btn" class="btn-ghost" title="Capture current selection (only needed when auto-update is off)" style="display:none; padding:4px 8px; font-size:10px; flex-shrink:0;">Refresh</button>
       </div>
 
       <!-- Breakpoints -->
@@ -573,6 +584,15 @@
           </div>
           <div class="setting-control">
             <input type="checkbox" id="clear-constraints-toggle" />
+          </div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Update on selection change</div>
+            <div class="setting-sub">Detect variants automatically as you click around. Turn off if Figma feels laggy — use the Refresh button to capture a new selection manually.</div>
+          </div>
+          <div class="setting-control">
+            <input type="checkbox" id="live-updates-toggle" checked />
           </div>
         </div>
       </div>
@@ -645,7 +665,7 @@
 let state = {
   source: null,
   breakpoints: [],
-  settings: { gap: 120, addLabels: true, clearWidthConstraints: false },
+  settings: { gap: 120, addLabels: true, clearWidthConstraints: false, liveUpdates: true },
   variableOptions: [],
   modeOptions: [],           // Every (collection, mode) pair from collections with >1 mode
   defaultBreakpoints: null,  // User-saved baseline (null until they save one)
@@ -827,7 +847,12 @@ document.querySelectorAll('.tab').forEach(tab => {
       state.settings.gap = parseInt(document.getElementById('gap-input').value) || 120;
       state.settings.addLabels = document.getElementById('labels-toggle').checked;
       state.settings.clearWidthConstraints = document.getElementById('clear-constraints-toggle').checked;
+      state.settings.liveUpdates = document.getElementById('live-updates-toggle').checked;
       send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+      // Reflect the updated live-updates flag on the source card (show/hide
+      // Refresh button) so the user sees it change without re-rendering all.
+      const refreshBtn = document.getElementById('refresh-selection-btn');
+      if (refreshBtn) refreshBtn.style.display = state.settings.liveUpdates === false ? 'inline-flex' : 'none';
     }
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === target));
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -930,9 +955,12 @@ function forceAutoMatchVariants() {
   renderBpList();
 }
 
-// Build the per-bp variant row: a <select> for each VARIANT property in the schema.
+// Build the per-bp variant row: a <select> for each VARIANT property in the
+// schema plus a "Clear" button that wipes this bp's slot for the active set
+// in one click — so the row falls back to the width/variable path.
 function buildVariantRowHtml(schema, bp, i) {
   const current = getBpVariantProps(bp, getSetStableKey(schema)) || {};
+  const hasAny = Object.keys(current).length > 0;
   const selects = schema.properties.map(prop => {
     const options = ['<option value="">— no change —</option>'].concat(
       prop.options.map(opt =>
@@ -941,10 +969,14 @@ function buildVariantRowHtml(schema, bp, i) {
     ).join('');
     return `<select class="bp-variant-select" data-index="${i}" data-prop="${escHtml(prop.name)}" title="${escHtml(prop.name)}">${options}</select>`;
   }).join('');
+  const clearBtn = hasAny
+    ? `<button type="button" class="bp-variant-clear" data-index="${i}" title="Clear variant — use width / variable instead">Clear</button>`
+    : '';
   return `
     <div class="settings-bp-variant-row">
       <span class="settings-bp-variant-label" title="${escHtml(schema.componentSetName)}">Variant</span>
       ${selects}
+      ${clearBtn}
     </div>
   `;
 }
@@ -1230,6 +1262,21 @@ function renderSettingsBpList() {
       }
       setBpVariantProps(bp, setId, Object.keys(next).length ? next : null);
       persistAndSync();
+      renderSettingsBpList(); // re-render to show/hide the Clear button as state changes
+    });
+  });
+
+  // Clear button — wipe the bp's slot for the active set in one click so the
+  // row falls back to the width/variable path immediately.
+  list.querySelectorAll('.bp-variant-clear').forEach(el => {
+    el.addEventListener('click', e => {
+      const i = parseInt(e.currentTarget.dataset.index);
+      const bp = state.breakpoints[i];
+      const activeSchema = getActiveVariantSchema();
+      if (!activeSchema) return;
+      setBpVariantProps(bp, getSetStableKey(activeSchema), null);
+      persistAndSync();
+      renderSettingsBpList();
     });
   });
 
@@ -1727,6 +1774,11 @@ function renderSettings() {
   document.getElementById('gap-input').value = state.settings.gap ?? 120;
   document.getElementById('labels-toggle').checked = state.settings.addLabels !== false;
   document.getElementById('clear-constraints-toggle').checked = state.settings.clearWidthConstraints === true;
+  document.getElementById('live-updates-toggle').checked = state.settings.liveUpdates !== false;
+  // Show the manual Refresh button only when auto-update is off so the source
+  // card stays minimal in the common case.
+  const refreshBtn = document.getElementById('refresh-selection-btn');
+  if (refreshBtn) refreshBtn.style.display = state.settings.liveUpdates === false ? 'inline-flex' : 'none';
 
   const varCount = state.variableOptions.length;
   const modeCount = state.modeOptions.length;
@@ -1740,11 +1792,11 @@ function renderSettings() {
   }
 
   // Disable the Refresh button while a fetch is in flight
-  const refreshBtn = document.getElementById('refresh-vars-btn');
-  if (refreshBtn) {
-    refreshBtn.disabled = state.loadingTokens;
-    refreshBtn.style.opacity = state.loadingTokens ? '0.5' : '1';
-    refreshBtn.textContent = state.loadingTokens ? 'Loading…' : 'Refresh';
+  const varsRefreshBtn = document.getElementById('refresh-vars-btn');
+  if (varsRefreshBtn) {
+    varsRefreshBtn.disabled = state.loadingTokens;
+    varsRefreshBtn.style.opacity = state.loadingTokens ? '0.5' : '1';
+    varsRefreshBtn.textContent = state.loadingTokens ? 'Loading…' : 'Refresh';
   }
 
   // Defaults section: enable/disable "Load my defaults" based on whether any are saved
@@ -1860,7 +1912,10 @@ document.getElementById('save-btn').addEventListener('click', () => {
   state.settings.gap = parseInt(document.getElementById('gap-input').value) || 120;
   state.settings.addLabels = document.getElementById('labels-toggle').checked;
   state.settings.clearWidthConstraints = document.getElementById('clear-constraints-toggle').checked;
+  state.settings.liveUpdates = document.getElementById('live-updates-toggle').checked;
   send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+  const refreshBtn = document.getElementById('refresh-selection-btn');
+  if (refreshBtn) refreshBtn.style.display = state.settings.liveUpdates === false ? 'inline-flex' : 'none';
   // Sync back to main panel
   renderBpList();
   updateGenerateBtn();
@@ -1868,6 +1923,12 @@ document.getElementById('save-btn').addEventListener('click', () => {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'main'));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.getElementById('panel-main').classList.add('active');
+});
+
+// Manual selection refresh — fires when live updates are off and the user
+// wants to capture the current selection without toggling the setting.
+document.getElementById('refresh-selection-btn').addEventListener('click', () => {
+  send({ type: 'refresh-selection' });
 });
 
 document.getElementById('reset-btn').addEventListener('click', () => {
