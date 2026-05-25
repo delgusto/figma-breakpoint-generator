@@ -39,7 +39,13 @@ const DEFAULT_SETTINGS = {
   gap: 120,
   addLabels: true,
   clearWidthConstraints: false, // Off by default — preserves component constraints. Turn on to strip min/max width so clones resize freely.
+  liveUpdates: true,            // When false, the plugin ignores selectionchange events entirely. User must click "Refresh selection" to detect variants on the current selection.
 };
+
+// Mirrors settings.liveUpdates so the sandbox can short-circuit the debounce
+// without round-tripping to the UI on every selection event. Kept in sync via
+// save-settings messages.
+let liveUpdatesEnabled = true;
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
@@ -56,6 +62,7 @@ async function init() {
 
   const breakpoints = savedBreakpoints || DEFAULT_BREAKPOINTS;
   const settings = savedSettings || DEFAULT_SETTINGS;
+  liveUpdatesEnabled = settings.liveUpdates !== false; // default true if absent
 
   // Read all FLOAT variables + multi-mode collections — both can be used as breakpoint links
   const [variableOptions, modeOptions] = await Promise.all([
@@ -495,6 +502,10 @@ function detectVariantSchema(node) {
 // keeps the UI responsive without noticeably delaying single clicks.
 let selectionDebounceTimer = null;
 function sendSelectionDebounced() {
+  // Gate: when the user has disabled live updates, ignore selection events
+  // entirely. They will hit "Refresh selection" in the UI when they want a
+  // detection pass — that fires `refresh-selection` and runs immediately.
+  if (!liveUpdatesEnabled) return;
   if (selectionDebounceTimer) clearTimeout(selectionDebounceTimer);
   selectionDebounceTimer = setTimeout(() => {
     selectionDebounceTimer = null;
@@ -516,6 +527,23 @@ figma.ui.onmessage = async (msg) => {
         figma.clientStorage.setAsync('breakpoints', msg.breakpoints),
         figma.clientStorage.setAsync('settings', msg.settings),
       ]);
+      // Mirror the live-updates flag into the sandbox so the next
+      // selectionchange honours the new value without waiting for a UI
+      // round-trip.
+      if (msg.settings && typeof msg.settings.liveUpdates === 'boolean') {
+        liveUpdatesEnabled = msg.settings.liveUpdates;
+      }
+      break;
+
+    case 'refresh-selection':
+      // Manual trigger — runs detection immediately regardless of the
+      // liveUpdates setting. Cancels any pending debounce so we don't
+      // double-fire.
+      if (selectionDebounceTimer) {
+        clearTimeout(selectionDebounceTimer);
+        selectionDebounceTimer = null;
+      }
+      sendSelection();
       break;
 
     case 'save-variant-target':
