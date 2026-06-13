@@ -1064,6 +1064,20 @@ function appearanceConfigured(settings) {
     (settings.appearanceCollectionId || settings.appearanceCollectionKey));
 }
 
+// Move a node to an absolute page position regardless of its parent's
+// coordinate model. Sets x/y, measures the resulting absolute origin, and
+// corrects for any offset — so it works whether SectionNode children are
+// page-absolute or section-relative (which differs by Figma version).
+function setAbsPos(node, x, y) {
+  try {
+    node.x = x; node.y = y;
+    const t = node.absoluteTransform;
+    const ex = x - t[0][2];
+    const ey = y - t[1][2];
+    if (ex || ey) { node.x = x + ex; node.y = y + ey; }
+  } catch (err) {}
+}
+
 // Wrap the generated nodes in a "— Light" Section with the light appearance
 // mode applied, then clone it into a sibling "— Dark" Section with the dark
 // mode applied. Returns { light, dark } or null when not configured / failed.
@@ -1076,45 +1090,40 @@ async function wrapInLightDarkSections(generated, source, settings, GAP) {
   const page = figma.currentPage;
   const PAD = 80;
 
-  // Sections don't auto-fit their children, and moving a section drags its
-  // children with it — but the child x/y setter is page-absolute. So: move the
-  // nodes in, capture their true page positions, size + place the section over
-  // that region, then re-assert the captured positions to undo the drift the
-  // section move caused. The result is a section frame that actually wraps its
-  // contents.
-  const light = figma.createSection();
-  light.name = `${source.name} — Light`;
-  page.appendChild(light);
-  for (const n of generated) {
-    try { light.appendChild(n); } catch (err) {}
-  }
-
+  // Capture each node's true page position BEFORE re-parenting — these are the
+  // coordinates we want the content to keep, independent of section quirks.
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  const absPos = [];
+  const targets = [];
   for (const n of generated) {
-    if (n.removed) continue;
     const t = n.absoluteTransform;
     const x = t[0][2], y = t[1][2];
-    absPos.push({ node: n, x: x, y: y });
+    targets.push({ node: n, x: x, y: y });
     minX = Math.min(minX, x);
     minY = Math.min(minY, y);
     maxX = Math.max(maxX, x + n.width);
     maxY = Math.max(maxY, y + n.height);
   }
-  if (isFinite(minX)) {
-    light.x = minX - PAD;
-    light.y = minY - PAD;
-    try {
-      const w = (maxX - minX) + PAD * 2;
-      const h = (maxY - minY) + PAD * 2;
-      if (light.resizeWithoutConstraints) light.resizeWithoutConstraints(w, h);
-      else light.resize(w, h);
-    } catch (err) {}
-    // Undo the child drift caused by moving the section.
-    for (const p of absPos) {
-      try { p.node.x = p.x; p.node.y = p.y; } catch (err) {}
-    }
+  if (!isFinite(minX)) return null;
+
+  const w = (maxX - minX) + PAD * 2;
+  const h = (maxY - minY) + PAD * 2;
+
+  const light = figma.createSection();
+  light.name = `${source.name} — Light`;
+  page.appendChild(light);
+  for (const t of targets) {
+    try { light.appendChild(t.node); } catch (err) {}
   }
+
+  // Position + size the section, then pin every child back to its captured
+  // page position (model-agnostic). Section first, children after — so any
+  // drift from moving the section is corrected.
+  setAbsPos(light, minX - PAD, minY - PAD);
+  try {
+    if (light.resizeWithoutConstraints) light.resizeWithoutConstraints(w, h);
+    else light.resize(w, h);
+  } catch (err) {}
+  for (const t of targets) setAbsPos(t.node, t.x, t.y);
 
   try {
     if (light.setExplicitVariableModeForCollection) {
@@ -1122,14 +1131,19 @@ async function wrapInLightDarkSections(generated, source, settings, GAP) {
     }
   } catch (err) {}
 
-  // Clone → dark section. Moving the clone (a section) moves its children with
-  // it, so the dark copy shifts right as one unit.
+  // Dark clone, shifted right by the section width + gap. Pin its children to
+  // the light targets plus the same offset, so it doesn't matter whether the
+  // section move dragged them or not.
   let dark = null;
   try {
     dark = light.clone();
     dark.name = `${source.name} — Dark`;
-    dark.x = light.x + light.width + GAP;
-    dark.y = light.y;
+    const offset = w + GAP;
+    setAbsPos(dark, (minX - PAD) + offset, minY - PAD);
+    const dchildren = dark.children;
+    for (let i = 0; i < dchildren.length && i < targets.length; i++) {
+      setAbsPos(dchildren[i], targets[i].x + offset, targets[i].y);
+    }
     if (dark.setExplicitVariableModeForCollection) {
       dark.setExplicitVariableModeForCollection(collection, settings.darkModeId);
     }
