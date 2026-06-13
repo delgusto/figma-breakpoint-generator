@@ -300,6 +300,72 @@ async function getVariableCollectionModes() {
   return result;
 }
 
+// Collect variable ids referenced by a single node (node-level bindings +
+// per-paint color bindings on fills/strokes).
+function collectVarIdsFromNode(n, set) {
+  const bv = n.boundVariables;
+  if (bv) {
+    for (const key of Object.keys(bv)) {
+      const val = bv[key];
+      if (Array.isArray(val)) {
+        for (const a of val) { if (a && a.id) set.add(a.id); }
+      } else if (val && val.id) {
+        set.add(val.id);
+      } else if (val && typeof val === 'object') {
+        for (const k of Object.keys(val)) { const a = val[k]; if (a && a.id) set.add(a.id); }
+      }
+    }
+  }
+  for (const prop of ['fills', 'strokes']) {
+    const paints = n[prop];
+    if (Array.isArray(paints)) {
+      for (const p of paints) {
+        if (p && p.boundVariables && p.boundVariables.color && p.boundVariables.color.id) {
+          set.add(p.boundVariables.color.id);
+        }
+      }
+    }
+  }
+}
+
+// Walk the selected node's subtree, gather every variable it binds, and return
+// the multi-mode collections those variables belong to. This surfaces the
+// collection the content ACTUALLY consumes — which the blanket library
+// enumeration may miss (e.g. it found an unrelated kit instead).
+async function getCollectionsUsedByNode(root) {
+  if (!root) return [];
+  const varIds = new Set();
+  const nodes = [root];
+  if ('findAll' in root) {
+    try {
+      const all = root.findAll(function() { return true; });
+      for (let i = 0; i < all.length && nodes.length < 4000; i++) nodes.push(all[i]);
+    } catch (err) {}
+  }
+  for (const n of nodes) {
+    try { collectVarIdsFromNode(n, varIds); } catch (err) {}
+  }
+
+  const colById = new Map();
+  for (const id of varIds) {
+    try {
+      const v = await figma.variables.getVariableByIdAsync(id);
+      if (!v) continue;
+      const col = await figma.variables.getVariableCollectionByIdAsync(v.variableCollectionId);
+      if (!col || !col.modes || col.modes.length < 2) continue;
+      if (colById.has(col.id)) continue;
+      colById.set(col.id, {
+        collectionId: col.id,
+        collectionKey: col.key || null,
+        collectionName: col.name,
+        libraryName: col.remote ? 'Library' : 'Local',
+        modes: col.modes.map(function(m) { return { modeId: m.modeId, modeName: m.name }; }),
+      });
+    } catch (err) {}
+  }
+  return Array.from(colById.values());
+}
+
 // ─── Component choices (label component picker) ───────────────────────────────
 
 // Enumerate components the user can pick as a label. Covers:
@@ -793,6 +859,16 @@ figma.ui.onmessage = async (msg) => {
     case 'refresh-components': {
       const componentOptions = await getComponentChoices();
       figma.ui.postMessage({ type: 'components', componentOptions });
+      break;
+    }
+
+    case 'detect-source-collections': {
+      // Scan the current selection's subtree for the multi-mode collections it
+      // actually uses, so the appearance picker can offer the right one.
+      const sel = figma.currentPage.selection;
+      const node = sel.length === 1 ? sel[0] : null;
+      const collections = node ? await getCollectionsUsedByNode(node) : [];
+      figma.ui.postMessage({ type: 'source-collections', collections });
       break;
     }
 

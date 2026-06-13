@@ -640,6 +640,9 @@
             <select id="appearance-collection-select" style="width:100%; text-overflow:ellipsis;"></select>
           </div>
         </div>
+        <div class="setting-row" style="padding-top:0;">
+          <button class="btn btn-ghost" id="detect-collection-btn" style="width:100%;">Detect from selected frame</button>
+        </div>
         <div class="setting-row stacked">
           <div>
             <div class="setting-label">Light mode</div>
@@ -733,6 +736,7 @@ let state = {
   variableOptions: [],
   modeOptions: [],           // Every (collection, mode) pair from collections with >1 mode
   componentOptions: [],      // Components the user can pick as the label component
+  sourceCollections: [],     // Multi-mode collections detected from the selected frame's bound variables
   defaultBreakpoints: null,  // User-saved baseline (null until they save one)
   preferredLibrary: null,    // Library name to pin to top of the dropdown
   filterToLibrary: false,    // When true, hide libraries other than preferredLibrary
@@ -889,6 +893,33 @@ window.onmessage = (event) => {
       state.componentOptions = msg.componentOptions || [];
       renderLabelComponentPicker();
       break;
+
+    case 'source-collections': {
+      state.sourceCollections = msg.collections || [];
+      const btn = document.getElementById('detect-collection-btn');
+      if (btn) { btn.disabled = false; btn.textContent = 'Detect from selected frame'; }
+      if (!state.sourceCollections.length) {
+        showStatus('No light/dark variable collection found on the selected frame.', 'error');
+      } else {
+        // Auto-pick the first detected collection + auto-match light/dark modes.
+        const c = state.sourceCollections[0];
+        const s = state.settings;
+        s.appearanceCollectionId = c.collectionId;
+        s.appearanceCollectionKey = c.collectionKey || null;
+        s.appearanceCollectionName = c.collectionName || null;
+        s.lightModeId = null; s.lightModeName = null;
+        s.darkModeId = null; s.darkModeName = null;
+        for (const m of (c.modes || [])) {
+          const n = String(m.modeName).toLowerCase();
+          if (!s.lightModeId && n.indexOf('light') !== -1) { s.lightModeId = m.modeId; s.lightModeName = m.modeName; }
+          if (!s.darkModeId && n.indexOf('dark') !== -1) { s.darkModeId = m.modeId; s.darkModeName = m.modeName; }
+        }
+        saveSettingsOnly();
+        renderAppearancePicker();
+        showStatus(`✓ Detected: ${c.collectionName}`, 'success');
+      }
+      break;
+    }
 
     case 'label-component-captured':
       if (!msg.choice) {
@@ -1930,9 +1961,23 @@ function renderSettings() {
   renderAppearancePicker();
 }
 
-// Build the unique collection list (collections with ≥2 modes) from modeOptions.
+// Build the unique collection list (collections with ≥2 modes). Collections
+// detected from the selected frame come first (tagged), followed by the
+// blanket library/local enumeration from modeOptions.
 function appearanceCollections() {
   const byId = new Map();
+  // Selection-derived first so they sort to the top and win the dedupe.
+  for (const c of (state.sourceCollections || [])) {
+    if (!c.collectionId || byId.has(c.collectionId)) continue;
+    byId.set(c.collectionId, {
+      collectionId: c.collectionId,
+      collectionKey: c.collectionKey || null,
+      collectionName: c.collectionName || 'Collection',
+      libraryName: c.libraryName || 'Local',
+      modes: (c.modes || []).slice(),
+      usedBySelection: true,
+    });
+  }
   for (const m of (state.modeOptions || [])) {
     const id = m.collectionId;
     if (!id) continue;
@@ -1943,11 +1988,18 @@ function appearanceCollections() {
         collectionName: m.collectionName || 'Collection',
         libraryName: m.libraryName || (m.isLibrary ? 'Library' : 'Local'),
         modes: [],
+        usedBySelection: false,
       });
     }
-    byId.get(id).modes.push({ modeId: m.modeId, modeName: m.modeName });
+    const entry = byId.get(id);
+    if (!entry.usedBySelection) entry.modes.push({ modeId: m.modeId, modeName: m.modeName });
   }
-  return Array.from(byId.values());
+  const arr = Array.from(byId.values());
+  arr.sort(function(a, b) {
+    if (a.usedBySelection !== b.usedBySelection) return a.usedBySelection ? -1 : 1;
+    return String(a.collectionName).localeCompare(String(b.collectionName));
+  });
+  return arr;
 }
 
 // Populate the appearance collection + light/dark mode selects from modeOptions
@@ -1975,9 +2027,11 @@ function renderAppearancePicker() {
   colSelect.innerHTML = ['<option value="">None — don’t create sections</option>']
     .concat(cols.map(c => {
       // Tag each collection with its source (library name / Local) plus mode
-      // count so "Collection 1" type defaults are distinguishable.
+      // count so "Collection 1" type defaults are distinguishable. Collections
+      // detected from the selected frame are flagged "used here".
       const lib = c.libraryName && c.libraryName !== 'Local' ? c.libraryName : 'Local';
-      const label = `${c.collectionName} · ${lib} (${c.modes.length} modes)`;
+      const used = c.usedBySelection ? '✓ used here · ' : '';
+      const label = `${used}${c.collectionName} · ${lib} (${c.modes.length} modes)`;
       return `<option value="${escHtml(c.collectionId)}" ${c.collectionId === curCol ? 'selected' : ''}>${escHtml(label)}</option>`;
     })).join('');
   const modes = chosen ? chosen.modes : [];
@@ -2323,6 +2377,14 @@ document.getElementById('appearance-dark-select').addEventListener('change', (e)
   state.settings.darkModeName = mode ? mode.modeName : null;
   saveSettingsOnly();
   renderAppearancePicker();
+});
+
+// Detect the appearance collection from the variables the selected frame uses.
+document.getElementById('detect-collection-btn').addEventListener('click', (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  send({ type: 'detect-source-collections' });
 });
 
 document.getElementById('refresh-components-btn').addEventListener('click', (e) => {
