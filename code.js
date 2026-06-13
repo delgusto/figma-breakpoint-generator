@@ -51,6 +51,7 @@ const DEFAULT_SETTINGS = {
   // Light/dark sections (PR B) — when a collection + both modes are set, the
   // plugin wraps the generated breakpoints in two Sections (light + dark),
   // each with the appearance variable mode applied. Empty = no sections.
+  appearanceDisabled: false,    // True once the user explicitly picks "None" — suppresses auto-detect
   appearanceCollectionId: null,
   appearanceCollectionKey: null,
   appearanceCollectionName: null,
@@ -576,6 +577,16 @@ function sendSelection() {
   const node = source ? figma.getNodeById(source.id) : null;
   const variantSchema = node ? detectVariantSchema(node) : null;
   figma.ui.postMessage({ type: 'selection', source, variantSchema });
+
+  // Auto-detect the appearance collection(s) the source uses and ship them as
+  // an automatic (non-toast) update so the appearance picker can pre-fill.
+  if (node) {
+    getCollectionsUsedByNode(node).then(function(collections) {
+      figma.ui.postMessage({ type: 'source-collections', collections, auto: true });
+    }).catch(function() {});
+  } else {
+    figma.ui.postMessage({ type: 'source-collections', collections: [], auto: true });
+  }
 }
 
 // Walk the selected node (and its descendants) and return every component set
@@ -1063,46 +1074,16 @@ async function wrapInLightDarkSections(generated, source, settings, GAP) {
   if (!collection) return null;
 
   const page = figma.currentPage;
-  const PAD = 80;
 
-  // Content bounds in absolute (page) coordinates, captured BEFORE we touch
-  // the section. absoluteTransform[*][2] is the node's page-space origin.
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  const absPos = generated.map(function(n) {
-    const t = n.absoluteTransform;
-    const x = t[0][2], y = t[1][2];
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x + n.width);
-    maxY = Math.max(maxY, y + n.height);
-    return { node: n, x: x, y: y };
-  });
-  if (!isFinite(minX)) return null;
-
-  // Create + place + size the section FIRST. Moving or resizing a section
-  // after it has children drags the children with it, so all section geometry
-  // must be set up before re-parenting anything into it.
+  // Create the section, then move the generated nodes in. SectionNode.appendChild
+  // preserves each node's absolute canvas position and the section auto-fits to
+  // contain them — so we must NOT rewrite child x/y or set the section size
+  // ourselves (doing so shoves the children outside the section's frame).
   const light = figma.createSection();
   light.name = `${source.name} — Light`;
   page.appendChild(light);
-  light.x = minX - PAD;
-  light.y = minY - PAD;
-  try {
-    const w = (maxX - minX) + PAD * 2;
-    const h = (maxY - minY) + PAD * 2;
-    if (light.resizeWithoutConstraints) light.resizeWithoutConstraints(w, h);
-    else light.resize(w, h);
-  } catch (err) {}
-
-  // Now move the generated nodes in and restore their page positions. Section
-  // children use page coordinates, so assigning the captured abs x/y lands
-  // each node exactly where it was.
-  for (const p of absPos) {
-    try {
-      light.appendChild(p.node);
-      p.node.x = p.x;
-      p.node.y = p.y;
-    } catch (err) {}
+  for (const n of generated) {
+    try { light.appendChild(n); } catch (err) {}
   }
 
   try {

@@ -896,25 +896,29 @@ window.onmessage = (event) => {
 
     case 'source-collections': {
       state.sourceCollections = msg.collections || [];
+      const auto = !!msg.auto;
       const btn = document.getElementById('detect-collection-btn');
-      if (btn) { btn.disabled = false; btn.textContent = 'Detect from selected frame'; }
+      if (btn && !auto) { btn.disabled = false; btn.textContent = 'Detect from selected frame'; }
+
+      if (auto) {
+        // Automatic pass on selection: only pre-fill when the user hasn't
+        // chosen anything yet and hasn't explicitly turned sections off.
+        const s = state.settings;
+        const unconfigured = !s.appearanceCollectionId && !s.appearanceDisabled;
+        if (unconfigured && state.sourceCollections.length) {
+          autoFillAppearanceFrom(state.sourceCollections[0]);
+        }
+        renderAppearancePicker();
+        break;
+      }
+
+      // Manual "Detect" click — apply + toast.
       if (!state.sourceCollections.length) {
         showStatus('No light/dark variable collection found on the selected frame.', 'error');
       } else {
-        // Auto-pick the first detected collection + auto-match light/dark modes.
         const c = state.sourceCollections[0];
-        const s = state.settings;
-        s.appearanceCollectionId = c.collectionId;
-        s.appearanceCollectionKey = c.collectionKey || null;
-        s.appearanceCollectionName = c.collectionName || null;
-        s.lightModeId = null; s.lightModeName = null;
-        s.darkModeId = null; s.darkModeName = null;
-        for (const m of (c.modes || [])) {
-          const n = String(m.modeName).toLowerCase();
-          if (!s.lightModeId && n.indexOf('light') !== -1) { s.lightModeId = m.modeId; s.lightModeName = m.modeName; }
-          if (!s.darkModeId && n.indexOf('dark') !== -1) { s.darkModeId = m.modeId; s.darkModeName = m.modeName; }
-        }
-        saveSettingsOnly();
+        state.settings.appearanceDisabled = false;
+        autoFillAppearanceFrom(c);
         renderAppearancePicker();
         showStatus(`✓ Detected: ${c.collectionName}`, 'success');
       }
@@ -2002,6 +2006,23 @@ function appearanceCollections() {
   return arr;
 }
 
+// Write a detected/selected collection into settings and auto-match modes
+// named light/dark. Persists.
+function autoFillAppearanceFrom(c) {
+  const s = state.settings;
+  s.appearanceCollectionId = c.collectionId;
+  s.appearanceCollectionKey = c.collectionKey || null;
+  s.appearanceCollectionName = c.collectionName || null;
+  s.lightModeId = null; s.lightModeName = null;
+  s.darkModeId = null; s.darkModeName = null;
+  for (const m of (c.modes || [])) {
+    const n = String(m.modeName).toLowerCase();
+    if (!s.lightModeId && n.indexOf('light') !== -1) { s.lightModeId = m.modeId; s.lightModeName = m.modeName; }
+    if (!s.darkModeId && n.indexOf('dark') !== -1) { s.darkModeId = m.modeId; s.darkModeName = m.modeName; }
+  }
+  saveSettingsOnly();
+}
+
 // Populate the appearance collection + light/dark mode selects from modeOptions
 // and the saved settings.
 function renderAppearancePicker() {
@@ -2338,7 +2359,10 @@ document.getElementById('appearance-collection-select').addEventListener('change
     s.appearanceCollectionName = null;
     s.lightModeId = null; s.lightModeName = null;
     s.darkModeId = null; s.darkModeName = null;
+    // Explicit opt-out — don't let auto-detect re-fill it on the next selection.
+    s.appearanceDisabled = true;
   } else {
+    s.appearanceDisabled = false;
     const col = appearanceCollections().find(c => c.collectionId === id);
     if (col) {
       s.appearanceCollectionId = col.collectionId;
