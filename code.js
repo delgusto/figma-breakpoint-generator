@@ -1131,18 +1131,18 @@ async function wrapInLightDarkSections(generated, source, settings, GAP) {
     }
   } catch (err) {}
 
-  // Dark clone, shifted right by the section width + gap. Pin its children to
-  // the light targets plus the same offset, so it doesn't matter whether the
-  // section move dragged them or not.
+  // Dark clone, stacked below the light section by its height + gap. Pin its
+  // children to the light targets plus the same vertical offset, so it doesn't
+  // matter whether the section move dragged them or not.
   let dark = null;
   try {
     dark = light.clone();
     dark.name = `${source.name} — Dark`;
-    const offset = w + GAP;
-    setAbsPos(dark, (minX - PAD) + offset, minY - PAD);
+    const offsetY = h + GAP;
+    setAbsPos(dark, minX - PAD, (minY - PAD) + offsetY);
     const dchildren = dark.children;
     for (let i = 0; i < dchildren.length && i < targets.length; i++) {
-      setAbsPos(dchildren[i], targets[i].x + offset, targets[i].y);
+      setAbsPos(dchildren[i], targets[i].x, targets[i].y + offsetY);
     }
     if (dark.setExplicitVariableModeForCollection) {
       dark.setExplicitVariableModeForCollection(collection, settings.darkModeId);
