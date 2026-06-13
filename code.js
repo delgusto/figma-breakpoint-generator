@@ -48,6 +48,16 @@ const DEFAULT_SETTINGS = {
   labelComponentIsSet: false,   // True when the chosen node is a COMPONENT_SET (import via set API, use defaultVariant)
   labelComponentIsLibrary: false, // True when the component is remote — import by key vs getNodeById
   labelComponentTextProp: null, // Which TEXT component property receives the breakpoint name
+  // Light/dark sections (PR B) — when a collection + both modes are set, the
+  // plugin wraps the generated breakpoints in two Sections (light + dark),
+  // each with the appearance variable mode applied. Empty = no sections.
+  appearanceCollectionId: null,
+  appearanceCollectionKey: null,
+  appearanceCollectionName: null,
+  lightModeId: null,
+  lightModeName: null,
+  darkModeId: null,
+  darkModeName: null,
 };
 
 // Mirrors settings.liveUpdates so the sandbox can short-circuit the debounce
@@ -941,11 +951,102 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
     cursor += actualWidth + GAP;
   }
 
+  // Optionally wrap everything in light + dark Sections.
+  if (appearanceConfigured(settings)) {
+    const sections = await wrapInLightDarkSections(generated, source, settings, GAP);
+    if (sections && sections.light) {
+      const sel = sections.dark ? [sections.light, sections.dark] : [sections.light];
+      figma.currentPage.selection = sel;
+      figma.viewport.scrollAndZoomIntoView(sel);
+      return resolved.length;
+    }
+  }
+
   // Select only the cloned frames (not labels — text or component instances)
   figma.currentPage.selection = cloneNodes;
   figma.viewport.scrollAndZoomIntoView(generated);
 
   return resolved.length;
+}
+
+// ─── Light/dark sections (PR B) ───────────────────────────────────────────────
+
+function appearanceConfigured(settings) {
+  return !!(settings &&
+    settings.lightModeId && settings.darkModeId &&
+    (settings.appearanceCollectionId || settings.appearanceCollectionKey));
+}
+
+// Wrap the generated nodes in a "— Light" Section with the light appearance
+// mode applied, then clone it into a sibling "— Dark" Section with the dark
+// mode applied. Returns { light, dark } or null when not configured / failed.
+async function wrapInLightDarkSections(generated, source, settings, GAP) {
+  if (!generated.length) return null;
+  const collection = await resolveCollectionByKeyOrId(
+    settings.appearanceCollectionId, settings.appearanceCollectionKey);
+  if (!collection) return null;
+
+  const page = figma.currentPage;
+  const PAD = 80;
+
+  // Capture absolute positions before re-parenting (sections live on the page,
+  // so nodes coming from a frame need their page-space coords restored).
+  const absPos = generated.map(function(n) {
+    const t = n.absoluteTransform;
+    return { node: n, x: t[0][2], y: t[1][2] };
+  });
+
+  const light = figma.createSection();
+  light.name = `${source.name} — Light`;
+  page.appendChild(light);
+
+  for (const p of absPos) {
+    try {
+      light.appendChild(p.node);
+      p.node.x = p.x;
+      p.node.y = p.y;
+    } catch (err) {}
+  }
+
+  // Content bounds (page coords) → size + position the section with padding.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of absPos) {
+    const n = p.node;
+    minX = Math.min(minX, n.x);
+    minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + n.width);
+    maxY = Math.max(maxY, n.y + n.height);
+  }
+  if (!isFinite(minX)) return null;
+
+  const w = (maxX - minX) + PAD * 2;
+  const h = (maxY - minY) + PAD * 2;
+  light.x = minX - PAD;
+  light.y = minY - PAD;
+  try {
+    if (light.resizeWithoutConstraints) light.resizeWithoutConstraints(w, h);
+    else light.resize(w, h);
+  } catch (err) {}
+
+  try {
+    if (light.setExplicitVariableModeForCollection) {
+      light.setExplicitVariableModeForCollection(collection, settings.lightModeId);
+    }
+  } catch (err) {}
+
+  // Clone → dark section to the right, flip the mode.
+  let dark = null;
+  try {
+    dark = light.clone();
+    dark.name = `${source.name} — Dark`;
+    dark.x = light.x + light.width + GAP;
+    dark.y = light.y;
+    if (dark.setExplicitVariableModeForCollection) {
+      dark.setExplicitVariableModeForCollection(collection, settings.darkModeId);
+    }
+  } catch (err) {}
+
+  return { light: light, dark: dark };
 }
 
 // ─── Variant helper ───────────────────────────────────────────────────────────
@@ -1021,16 +1122,19 @@ function applyAutoLayoutWidth(frame, targetWidth) {
 // Resolve the VariableCollection referenced by a mode-linked breakpoint.
 // Tries the local id first, then imports the first variable of the library collection
 // so Figma can surface the collection object via getVariableCollectionByIdAsync.
-async function resolveCollection(bp) {
-  if (bp.modeCollectionId) {
+// Resolve a VariableCollection from a local id and/or a library key. Library
+// collections are reached by importing one of their variables (same trick the
+// breakpoint mode flow uses).
+async function resolveCollectionByKeyOrId(collectionId, collectionKey) {
+  if (collectionId) {
     try {
-      const col = await figma.variables.getVariableCollectionByIdAsync(bp.modeCollectionId);
+      const col = await figma.variables.getVariableCollectionByIdAsync(collectionId);
       if (col) return col;
     } catch (err) { /* fall through */ }
   }
-  if (bp.modeCollectionKey) {
+  if (collectionKey) {
     try {
-      const libVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(bp.modeCollectionKey);
+      const libVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collectionKey);
       if (libVars && libVars.length) {
         const imported = await figma.variables.importVariableByKeyAsync(libVars[0].key);
         if (imported) {
@@ -1040,6 +1144,10 @@ async function resolveCollection(bp) {
     } catch (err) { /* fall through */ }
   }
   return null;
+}
+
+async function resolveCollection(bp) {
+  return resolveCollectionByKeyOrId(bp.modeCollectionId, bp.modeCollectionKey);
 }
 
 // ─── Label helper ─────────────────────────────────────────────────────────────

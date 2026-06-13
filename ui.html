@@ -628,6 +628,41 @@
 
       <hr />
 
+      <!-- Appearance sections (light / dark) -->
+      <div class="section-label">Light / dark sections</div>
+      <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 2px 12px; margin-bottom:6px;">
+        <div class="setting-row stacked">
+          <div>
+            <div class="setting-label">Appearance collection</div>
+            <div class="setting-sub">Pick the variable collection that holds your light/dark modes. Leave as “None” to skip sections.</div>
+          </div>
+          <div class="setting-control">
+            <select id="appearance-collection-select" style="width:100%; text-overflow:ellipsis;"></select>
+          </div>
+        </div>
+        <div class="setting-row stacked">
+          <div>
+            <div class="setting-label">Light mode</div>
+          </div>
+          <div class="setting-control">
+            <select id="appearance-light-select" style="width:100%; text-overflow:ellipsis;"></select>
+          </div>
+        </div>
+        <div class="setting-row stacked" style="border-bottom:none;">
+          <div>
+            <div class="setting-label">Dark mode</div>
+          </div>
+          <div class="setting-control">
+            <select id="appearance-dark-select" style="width:100%; text-overflow:ellipsis;"></select>
+          </div>
+        </div>
+      </div>
+      <p id="appearance-hint" style="font-size:11px; color:var(--dim); margin-bottom:14px;">
+        When set, Generate produces two Sections side-by-side — one with the light mode applied, one with the dark mode.
+      </p>
+
+      <hr />
+
       <!-- Defaults -->
       <div class="section-label">Defaults</div>
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-bottom:6px;">
@@ -1892,6 +1927,84 @@ function renderSettings() {
   filterToggle.parentElement.style.opacity = filterDisabled ? '0.5' : '1';
 
   renderLabelComponentPicker();
+  renderAppearancePicker();
+}
+
+// Build the unique collection list (collections with ≥2 modes) from modeOptions.
+function appearanceCollections() {
+  const byId = new Map();
+  for (const m of (state.modeOptions || [])) {
+    const id = m.collectionId;
+    if (!id) continue;
+    if (!byId.has(id)) {
+      byId.set(id, {
+        collectionId: id,
+        collectionKey: m.collectionKey || null,
+        collectionName: m.collectionName || 'Collection',
+        libraryName: m.libraryName || (m.isLibrary ? 'Library' : 'Local'),
+        modes: [],
+      });
+    }
+    byId.get(id).modes.push({ modeId: m.modeId, modeName: m.modeName });
+  }
+  return Array.from(byId.values());
+}
+
+// Populate the appearance collection + light/dark mode selects from modeOptions
+// and the saved settings.
+function renderAppearancePicker() {
+  const colSelect = document.getElementById('appearance-collection-select');
+  const lightSelect = document.getElementById('appearance-light-select');
+  const darkSelect = document.getElementById('appearance-dark-select');
+  if (!colSelect || !lightSelect || !darkSelect) return;
+
+  const cols = appearanceCollections();
+  const s = state.settings;
+
+  // Resolve the saved collection by id, falling back to key (library ids can
+  // change across sessions). Re-sync settings.id to the live one if matched.
+  let chosen = cols.find(c => c.collectionId === s.appearanceCollectionId);
+  if (!chosen && s.appearanceCollectionKey) {
+    chosen = cols.find(c => c.collectionKey && c.collectionKey === s.appearanceCollectionKey);
+    if (chosen && chosen.collectionId !== s.appearanceCollectionId) {
+      s.appearanceCollectionId = chosen.collectionId;
+    }
+  }
+  const curCol = chosen ? chosen.collectionId : '';
+
+  colSelect.innerHTML = ['<option value="">None — don’t create sections</option>']
+    .concat(cols.map(c =>
+      `<option value="${escHtml(c.collectionId)}" ${c.collectionId === curCol ? 'selected' : ''}>${escHtml(c.collectionName)}</option>`
+    )).join('');
+  const modes = chosen ? chosen.modes : [];
+  const fillModes = (sel, currentId) => {
+    if (!chosen) {
+      sel.innerHTML = '<option value="">—</option>';
+      sel.disabled = true; sel.style.opacity = '0.5';
+      return;
+    }
+    sel.disabled = false; sel.style.opacity = '1';
+    sel.innerHTML = ['<option value="">— pick a mode —</option>']
+      .concat(modes.map(m =>
+        `<option value="${escHtml(m.modeId)}" ${m.modeId === currentId ? 'selected' : ''}>${escHtml(m.modeName)}</option>`
+      )).join('');
+  };
+  fillModes(lightSelect, s.lightModeId || '');
+  fillModes(darkSelect, s.darkModeId || '');
+
+  const hint = document.getElementById('appearance-hint');
+  if (hint) {
+    if (chosen && s.lightModeId && s.darkModeId) {
+      hint.textContent = 'Generate will produce two Sections side-by-side — one light, one dark.';
+      hint.style.color = 'var(--dim)';
+    } else if (chosen) {
+      hint.textContent = 'Pick both a light and a dark mode to enable section output.';
+      hint.style.color = 'var(--dim)';
+    } else {
+      hint.textContent = 'When set, Generate produces two Sections side-by-side — one with the light mode applied, one with the dark mode.';
+      hint.style.color = 'var(--dim)';
+    }
+  }
 }
 
 // Identify a stored component option. Library components are keyed by their
@@ -2155,6 +2268,57 @@ document.getElementById('labels-toggle').addEventListener('change', (e) => {
   state.settings.addLabels = e.target.checked;
   syncLabelOptionsVisibility();
   saveSettingsOnly();
+});
+
+// Appearance (light/dark sections) pickers.
+document.getElementById('appearance-collection-select').addEventListener('change', (e) => {
+  const id = e.target.value;
+  const s = state.settings;
+  if (!id) {
+    s.appearanceCollectionId = null;
+    s.appearanceCollectionKey = null;
+    s.appearanceCollectionName = null;
+    s.lightModeId = null; s.lightModeName = null;
+    s.darkModeId = null; s.darkModeName = null;
+  } else {
+    const col = appearanceCollections().find(c => c.collectionId === id);
+    if (col) {
+      s.appearanceCollectionId = col.collectionId;
+      s.appearanceCollectionKey = col.collectionKey || null;
+      s.appearanceCollectionName = col.collectionName || null;
+      // Reset mode picks — they belong to the previous collection.
+      s.lightModeId = null; s.lightModeName = null;
+      s.darkModeId = null; s.darkModeName = null;
+      // Auto-match modes by name when obvious (light/dark).
+      for (const m of col.modes) {
+        const n = String(m.modeName).toLowerCase();
+        if (!s.lightModeId && n.indexOf('light') !== -1) { s.lightModeId = m.modeId; s.lightModeName = m.modeName; }
+        if (!s.darkModeId && n.indexOf('dark') !== -1) { s.darkModeId = m.modeId; s.darkModeName = m.modeName; }
+      }
+    }
+  }
+  saveSettingsOnly();
+  renderAppearancePicker();
+});
+
+document.getElementById('appearance-light-select').addEventListener('change', (e) => {
+  const id = e.target.value || null;
+  const col = appearanceCollections().find(c => c.collectionId === state.settings.appearanceCollectionId);
+  const mode = col && col.modes.find(m => m.modeId === id);
+  state.settings.lightModeId = id;
+  state.settings.lightModeName = mode ? mode.modeName : null;
+  saveSettingsOnly();
+  renderAppearancePicker();
+});
+
+document.getElementById('appearance-dark-select').addEventListener('change', (e) => {
+  const id = e.target.value || null;
+  const col = appearanceCollections().find(c => c.collectionId === state.settings.appearanceCollectionId);
+  const mode = col && col.modes.find(m => m.modeId === id);
+  state.settings.darkModeId = id;
+  state.settings.darkModeName = mode ? mode.modeName : null;
+  saveSettingsOnly();
+  renderAppearancePicker();
 });
 
 document.getElementById('refresh-components-btn').addEventListener('click', (e) => {
