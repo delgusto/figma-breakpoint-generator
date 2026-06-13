@@ -570,15 +570,6 @@
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Add labels above frames</div>
-            <div class="setting-sub">Breakpoint name &amp; width in px</div>
-          </div>
-          <div class="setting-control">
-            <input type="checkbox" id="labels-toggle" checked />
-          </div>
-        </div>
-        <div class="setting-row">
-          <div>
             <div class="setting-label">Remove min/max width</div>
             <div class="setting-sub">Strip width constraints from clones so they resize freely. Turn off to keep component constraints.</div>
           </div>
@@ -595,39 +586,45 @@
             <input type="checkbox" id="live-updates-toggle" checked />
           </div>
         </div>
-      </div>
-
-      <hr />
-
-      <!-- Label component -->
-      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-        <div class="section-label" style="margin-bottom:0; border:none; padding:0;">Label component</div>
-        <button class="btn-ghost" id="refresh-components-btn" style="padding:4px 8px; font-size:10px;">Refresh</button>
-      </div>
-      <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 2px 12px; margin-bottom:6px;">
-        <div class="setting-row stacked">
+        <div class="setting-row" style="border-bottom:none;">
           <div>
-            <div class="setting-label">Component</div>
-            <div class="setting-sub">Used above each breakpoint instead of the plain text label. Leave as “Text label” to keep the default.</div>
+            <div class="setting-label">Add labels above frames</div>
+            <div class="setting-sub">Breakpoint name, or a component you choose</div>
           </div>
           <div class="setting-control">
-            <select id="label-component-select" style="width:100%; text-overflow:ellipsis;"></select>
+            <input type="checkbox" id="labels-toggle" checked />
           </div>
         </div>
-        <div class="setting-row stacked">
-          <div>
-            <div class="setting-label">Text property</div>
-            <div class="setting-sub">Which text property receives the breakpoint name.</div>
+
+        <!-- Expandable: only relevant when labels are on -->
+        <div id="label-options" style="display:none; border-top:1px solid var(--border2); padding:10px 0 4px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+            <div class="setting-label">Label component</div>
+            <button class="btn-ghost" id="refresh-components-btn" style="padding:4px 8px; font-size:10px;">Refresh</button>
           </div>
-          <div class="setting-control">
-            <select id="label-textprop-select" style="width:100%; text-overflow:ellipsis;"></select>
+          <div class="setting-row stacked" style="padding-top:0;">
+            <div>
+              <div class="setting-sub" style="margin-top:0;">Used above each breakpoint instead of the plain text label. Leave as “Text label” to keep the default.</div>
+            </div>
+            <div class="setting-control">
+              <select id="label-component-select" style="width:100%; text-overflow:ellipsis;"></select>
+            </div>
           </div>
+          <div class="setting-row stacked" style="border-bottom:none;">
+            <div>
+              <div class="setting-label">Text property</div>
+              <div class="setting-sub">Which text receives the breakpoint name.</div>
+            </div>
+            <div class="setting-control">
+              <select id="label-textprop-select" style="width:100%; text-overflow:ellipsis;"></select>
+            </div>
+          </div>
+          <button class="btn btn-ghost" id="use-selection-label-btn" style="width:100%; margin:6px 0;">Use selected component as label</button>
+          <p id="label-component-hint" style="font-size:11px; color:var(--dim); margin-bottom:2px;">
+            Select your label component (or an instance of it) on the canvas, then click “Use selected component” — this is the reliable way to pick a library component. The dropdown only lists components already used in this file.
+          </p>
         </div>
       </div>
-      <button class="btn btn-ghost" id="use-selection-label-btn" style="width:100%; margin-bottom:6px;">Use selected component as label</button>
-      <p id="label-component-hint" style="font-size:11px; color:var(--dim); margin-bottom:14px;">
-        Select your label component (or an instance of it) on the canvas, then click “Use selected component” — this is the reliable way to pick a library component. The dropdown only lists components already used in this file.
-      </p>
 
       <hr />
 
@@ -1817,11 +1814,18 @@ document.addEventListener('mousedown', e => {
 
 // ─── Render: settings controls ────────────────────────────────────────────────
 
+// Reveal the label-component options only when "Add labels" is on.
+function syncLabelOptionsVisibility() {
+  const wrap = document.getElementById('label-options');
+  if (wrap) wrap.style.display = state.settings.addLabels !== false ? 'block' : 'none';
+}
+
 function renderSettings() {
   document.getElementById('gap-input').value = state.settings.gap ?? 120;
   document.getElementById('labels-toggle').checked = state.settings.addLabels !== false;
   document.getElementById('clear-constraints-toggle').checked = state.settings.clearWidthConstraints === true;
   document.getElementById('live-updates-toggle').checked = state.settings.liveUpdates !== false;
+  syncLabelOptionsVisibility();
   // Show the manual Refresh button only when auto-update is off so the source
   // card stays minimal in the common case.
   const refreshBtn = document.getElementById('refresh-selection-btn');
@@ -2144,6 +2148,13 @@ document.getElementById('label-textprop-select').addEventListener('change', (e) 
 // the reliable way to pick a library component not enumerable from the file.
 document.getElementById('use-selection-label-btn').addEventListener('click', () => {
   send({ type: 'capture-label-component' });
+});
+
+// Toggling "Add labels" reveals/hides the label-component options and persists.
+document.getElementById('labels-toggle').addEventListener('change', (e) => {
+  state.settings.addLabels = e.target.checked;
+  syncLabelOptionsVisibility();
+  saveSettingsOnly();
 });
 
 document.getElementById('refresh-components-btn').addEventListener('click', (e) => {
