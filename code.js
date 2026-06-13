@@ -1074,16 +1074,46 @@ async function wrapInLightDarkSections(generated, source, settings, GAP) {
   if (!collection) return null;
 
   const page = figma.currentPage;
+  const PAD = 80;
 
-  // Create the section, then move the generated nodes in. SectionNode.appendChild
-  // preserves each node's absolute canvas position and the section auto-fits to
-  // contain them — so we must NOT rewrite child x/y or set the section size
-  // ourselves (doing so shoves the children outside the section's frame).
+  // Sections don't auto-fit their children, and moving a section drags its
+  // children with it — but the child x/y setter is page-absolute. So: move the
+  // nodes in, capture their true page positions, size + place the section over
+  // that region, then re-assert the captured positions to undo the drift the
+  // section move caused. The result is a section frame that actually wraps its
+  // contents.
   const light = figma.createSection();
   light.name = `${source.name} — Light`;
   page.appendChild(light);
   for (const n of generated) {
     try { light.appendChild(n); } catch (err) {}
+  }
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const absPos = [];
+  for (const n of generated) {
+    if (n.removed) continue;
+    const t = n.absoluteTransform;
+    const x = t[0][2], y = t[1][2];
+    absPos.push({ node: n, x: x, y: y });
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + n.width);
+    maxY = Math.max(maxY, y + n.height);
+  }
+  if (isFinite(minX)) {
+    light.x = minX - PAD;
+    light.y = minY - PAD;
+    try {
+      const w = (maxX - minX) + PAD * 2;
+      const h = (maxY - minY) + PAD * 2;
+      if (light.resizeWithoutConstraints) light.resizeWithoutConstraints(w, h);
+      else light.resize(w, h);
+    } catch (err) {}
+    // Undo the child drift caused by moving the section.
+    for (const p of absPos) {
+      try { p.node.x = p.x; p.node.y = p.y; } catch (err) {}
+    }
   }
 
   try {
