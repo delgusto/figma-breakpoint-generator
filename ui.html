@@ -599,6 +599,37 @@
 
       <hr />
 
+      <!-- Label component -->
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+        <div class="section-label" style="margin-bottom:0; border:none; padding:0;">Label component</div>
+        <button class="btn-ghost" id="refresh-components-btn" style="padding:4px 8px; font-size:10px;">Refresh</button>
+      </div>
+      <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 2px 12px; margin-bottom:6px;">
+        <div class="setting-row stacked">
+          <div>
+            <div class="setting-label">Component</div>
+            <div class="setting-sub">Used above each breakpoint instead of the plain text label. Leave as “Text label” to keep the default.</div>
+          </div>
+          <div class="setting-control">
+            <select id="label-component-select" style="width:100%; text-overflow:ellipsis;"></select>
+          </div>
+        </div>
+        <div class="setting-row stacked">
+          <div>
+            <div class="setting-label">Text property</div>
+            <div class="setting-sub">Which text property receives the breakpoint name.</div>
+          </div>
+          <div class="setting-control">
+            <select id="label-textprop-select" style="width:100%; text-overflow:ellipsis;"></select>
+          </div>
+        </div>
+      </div>
+      <p id="label-component-hint" style="font-size:11px; color:var(--dim); margin-bottom:14px;">
+        Pick a published component (e.g. a breakpoint label) from your libraries. Library components must be used somewhere in this file to appear here.
+      </p>
+
+      <hr />
+
       <!-- Defaults -->
       <div class="section-label">Defaults</div>
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-bottom:6px;">
@@ -668,6 +699,7 @@ let state = {
   settings: { gap: 120, addLabels: true, clearWidthConstraints: false, liveUpdates: true },
   variableOptions: [],
   modeOptions: [],           // Every (collection, mode) pair from collections with >1 mode
+  componentOptions: [],      // Components the user can pick as the label component
   defaultBreakpoints: null,  // User-saved baseline (null until they save one)
   preferredLibrary: null,    // Library name to pin to top of the dropdown
   filterToLibrary: false,    // When true, hide libraries other than preferredLibrary
@@ -781,6 +813,7 @@ window.onmessage = (event) => {
       state.settings = msg.settings;
       state.variableOptions = msg.variableOptions || [];
       state.modeOptions = msg.modeOptions || [];
+      state.componentOptions = msg.componentOptions || [];
       state.defaultBreakpoints = msg.defaultBreakpoints || null;
       state.preferredLibrary = msg.preferredLibrary || null;
       state.filterToLibrary = !!msg.filterToLibrary;
@@ -817,6 +850,11 @@ window.onmessage = (event) => {
       renderSettingsBpList();
       renderSettings(); // refresh var-hint + library picker list
       refreshOpenPopups();
+      break;
+
+    case 'components':
+      state.componentOptions = msg.componentOptions || [];
+      renderLabelComponentPicker();
       break;
 
     case 'var-error':
@@ -1839,6 +1877,86 @@ function renderSettings() {
   const filterDisabled = !currentPref;
   filterToggle.disabled = filterDisabled;
   filterToggle.parentElement.style.opacity = filterDisabled ? '0.5' : '1';
+
+  renderLabelComponentPicker();
+}
+
+// Identify a stored component option. Library components are keyed by their
+// stable publish key; local ones fall back to node id.
+function componentOptionValue(opt) {
+  return opt.isLibrary && opt.key ? ('k:' + opt.key) : ('i:' + opt.id);
+}
+
+function currentLabelComponentValue() {
+  const s = state.settings;
+  if (s.labelComponentIsLibrary && s.labelComponentKey) return 'k:' + s.labelComponentKey;
+  if (s.labelComponentId) return 'i:' + s.labelComponentId;
+  return '';
+}
+
+// Populate the label-component <select> + its text-property <select> from
+// state.componentOptions and the saved settings.
+function renderLabelComponentPicker() {
+  const compSelect = document.getElementById('label-component-select');
+  const propSelect = document.getElementById('label-textprop-select');
+  if (!compSelect || !propSelect) return;
+
+  const opts = state.componentOptions || [];
+  const currentVal = currentLabelComponentValue();
+
+  // If the saved component is a library one not currently in the list (e.g.
+  // not yet used in this file), keep a synthetic option so the user still
+  // sees their choice rather than it silently reverting to "Text label".
+  let haveCurrent = !currentVal;
+  const optionHtml = ['<option value="">Text label (default)</option>'];
+  for (const opt of opts) {
+    const val = componentOptionValue(opt);
+    if (val === currentVal) haveCurrent = true;
+    const label = `${opt.name}${opt.isLibrary ? '' : ' · Local'}`;
+    optionHtml.push(`<option value="${escHtml(val)}" ${val === currentVal ? 'selected' : ''}>${escHtml(label)}</option>`);
+  }
+  if (!haveCurrent && currentVal) {
+    const nm = state.settings.labelComponentName || 'Saved component';
+    optionHtml.push(`<option value="${escHtml(currentVal)}" selected>${escHtml(nm)} (not in this file)</option>`);
+  }
+  compSelect.innerHTML = optionHtml.join('');
+
+  // Text-property dropdown reflects the chosen component's TEXT props.
+  const chosen = opts.find(o => componentOptionValue(o) === currentVal);
+  const textProps = chosen ? (chosen.textProps || []) : [];
+  const currentProp = state.settings.labelComponentTextProp || '';
+  const noComponent = !currentVal;
+
+  if (noComponent) {
+    propSelect.innerHTML = '<option value="">—</option>';
+    propSelect.disabled = true;
+    propSelect.style.opacity = '0.5';
+  } else if (!textProps.length) {
+    propSelect.innerHTML = '<option value="">No text properties</option>';
+    propSelect.disabled = true;
+    propSelect.style.opacity = '0.5';
+  } else {
+    propSelect.disabled = false;
+    propSelect.style.opacity = '1';
+    propSelect.innerHTML = ['<option value="">— don’t set text —</option>']
+      .concat(textProps.map(p => {
+        // Component property names are stored as "Name#id"; show only the name.
+        const display = String(p).split('#')[0];
+        return `<option value="${escHtml(p)}" ${p === currentProp ? 'selected' : ''}>${escHtml(display)}</option>`;
+      })).join('');
+  }
+
+  // Hint line: warn when a saved library component isn't resolvable here.
+  const hint = document.getElementById('label-component-hint');
+  if (hint) {
+    if (!haveCurrent && currentVal) {
+      hint.textContent = '⚠ Saved component not found in this file. Use it somewhere here, then Refresh — or pick another.';
+      hint.style.color = 'var(--red)';
+    } else {
+      hint.textContent = 'Pick a published component (e.g. a breakpoint label) from your libraries. Library components must be used somewhere in this file to appear here.';
+      hint.style.color = 'var(--dim)';
+    }
+  }
 }
 
 function renderAll() {
@@ -1945,6 +2063,54 @@ document.getElementById('refresh-vars-btn').addEventListener('click', () => {
   renderSettings();
   refreshOpenPopups();
   send({ type: 'refresh-variables' });
+});
+
+// Persist just the settings object (no breakpoint changes).
+function saveSettingsOnly() {
+  send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+}
+
+// Label component picker — choosing a component writes its key/id/flags into
+// settings and refreshes the text-property dropdown to match.
+document.getElementById('label-component-select').addEventListener('change', (e) => {
+  const val = e.target.value;
+  const s = state.settings;
+  if (!val) {
+    s.labelComponentKey = null;
+    s.labelComponentId = null;
+    s.labelComponentName = null;
+    s.labelComponentIsSet = false;
+    s.labelComponentIsLibrary = false;
+    s.labelComponentTextProp = null;
+  } else {
+    const opt = (state.componentOptions || []).find(o => componentOptionValue(o) === val);
+    if (opt) {
+      s.labelComponentKey = opt.key || null;
+      s.labelComponentId = opt.id || null;
+      s.labelComponentName = opt.name || null;
+      s.labelComponentIsSet = !!opt.isSet;
+      s.labelComponentIsLibrary = !!opt.isLibrary;
+      // Auto-pick the first text property if exactly one exists; else clear.
+      const props = opt.textProps || [];
+      s.labelComponentTextProp = props.length === 1 ? props[0] : null;
+    }
+  }
+  saveSettingsOnly();
+  renderLabelComponentPicker();
+});
+
+document.getElementById('label-textprop-select').addEventListener('change', (e) => {
+  state.settings.labelComponentTextProp = e.target.value || null;
+  saveSettingsOnly();
+});
+
+document.getElementById('refresh-components-btn').addEventListener('click', (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  send({ type: 'refresh-components' });
+  // Re-enable shortly; the 'components' message re-renders the picker.
+  setTimeout(() => { btn.disabled = false; btn.textContent = 'Refresh'; }, 1200);
 });
 
 // Save current breakpoints as the user's personal baseline
