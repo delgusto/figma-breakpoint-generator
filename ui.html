@@ -1973,9 +1973,13 @@ function renderAppearancePicker() {
   const curCol = chosen ? chosen.collectionId : '';
 
   colSelect.innerHTML = ['<option value="">None — don’t create sections</option>']
-    .concat(cols.map(c =>
-      `<option value="${escHtml(c.collectionId)}" ${c.collectionId === curCol ? 'selected' : ''}>${escHtml(c.collectionName)}</option>`
-    )).join('');
+    .concat(cols.map(c => {
+      // Tag each collection with its source (library name / Local) plus mode
+      // count so "Collection 1" type defaults are distinguishable.
+      const lib = c.libraryName && c.libraryName !== 'Local' ? c.libraryName : 'Local';
+      const label = `${c.collectionName} · ${lib} (${c.modes.length} modes)`;
+      return `<option value="${escHtml(c.collectionId)}" ${c.collectionId === curCol ? 'selected' : ''}>${escHtml(label)}</option>`;
+    })).join('');
   const modes = chosen ? chosen.modes : [];
   const fillModes = (sel, currentId) => {
     if (!chosen) {

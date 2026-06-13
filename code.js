@@ -989,17 +989,38 @@ async function wrapInLightDarkSections(generated, source, settings, GAP) {
   const page = figma.currentPage;
   const PAD = 80;
 
-  // Capture absolute positions before re-parenting (sections live on the page,
-  // so nodes coming from a frame need their page-space coords restored).
+  // Content bounds in absolute (page) coordinates, captured BEFORE we touch
+  // the section. absoluteTransform[*][2] is the node's page-space origin.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   const absPos = generated.map(function(n) {
     const t = n.absoluteTransform;
-    return { node: n, x: t[0][2], y: t[1][2] };
+    const x = t[0][2], y = t[1][2];
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + n.width);
+    maxY = Math.max(maxY, y + n.height);
+    return { node: n, x: x, y: y };
   });
+  if (!isFinite(minX)) return null;
 
+  // Create + place + size the section FIRST. Moving or resizing a section
+  // after it has children drags the children with it, so all section geometry
+  // must be set up before re-parenting anything into it.
   const light = figma.createSection();
   light.name = `${source.name} — Light`;
   page.appendChild(light);
+  light.x = minX - PAD;
+  light.y = minY - PAD;
+  try {
+    const w = (maxX - minX) + PAD * 2;
+    const h = (maxY - minY) + PAD * 2;
+    if (light.resizeWithoutConstraints) light.resizeWithoutConstraints(w, h);
+    else light.resize(w, h);
+  } catch (err) {}
 
+  // Now move the generated nodes in and restore their page positions. Section
+  // children use page coordinates, so assigning the captured abs x/y lands
+  // each node exactly where it was.
   for (const p of absPos) {
     try {
       light.appendChild(p.node);
@@ -1008,33 +1029,14 @@ async function wrapInLightDarkSections(generated, source, settings, GAP) {
     } catch (err) {}
   }
 
-  // Content bounds (page coords) → size + position the section with padding.
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const p of absPos) {
-    const n = p.node;
-    minX = Math.min(minX, n.x);
-    minY = Math.min(minY, n.y);
-    maxX = Math.max(maxX, n.x + n.width);
-    maxY = Math.max(maxY, n.y + n.height);
-  }
-  if (!isFinite(minX)) return null;
-
-  const w = (maxX - minX) + PAD * 2;
-  const h = (maxY - minY) + PAD * 2;
-  light.x = minX - PAD;
-  light.y = minY - PAD;
-  try {
-    if (light.resizeWithoutConstraints) light.resizeWithoutConstraints(w, h);
-    else light.resize(w, h);
-  } catch (err) {}
-
   try {
     if (light.setExplicitVariableModeForCollection) {
       light.setExplicitVariableModeForCollection(collection, settings.lightModeId);
     }
   } catch (err) {}
 
-  // Clone → dark section to the right, flip the mode.
+  // Clone → dark section. Moving the clone (a section) moves its children with
+  // it, so the dark copy shifts right as one unit.
   let dark = null;
   try {
     dark = light.clone();
