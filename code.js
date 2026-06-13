@@ -298,6 +298,50 @@ async function getVariableCollectionModes() {
 //     surfaced via the mainComponent of existing instances
 // Runs only on init + explicit refresh-components (not on selection change),
 // since findAllWithCriteria over the whole document is not free.
+// Build a label-choice object from a COMPONENT or COMPONENT_SET node.
+function componentChoiceFromNode(node, isLibrary) {
+  if (!node) return null;
+  const textProps = [];
+  try {
+    const defs = node.componentPropertyDefinitions || {};
+    for (const propName of Object.keys(defs)) {
+      if (defs[propName] && defs[propName].type === 'TEXT') textProps.push(propName);
+    }
+  } catch (err) {}
+  return {
+    key: node.key || null,
+    id: node.id,
+    name: node.name,
+    isSet: node.type === 'COMPONENT_SET',
+    isLibrary: !!isLibrary,
+    libraryName: isLibrary ? 'Library' : 'Local',
+    textProps: textProps,
+  };
+}
+
+// Resolve any selected node (instance / component / variant) up to the
+// component or set the user means to use as a label. Returns a choice object
+// or null when the selection isn't component-backed.
+function captureComponentChoiceFromSelection() {
+  const sel = figma.currentPage.selection;
+  if (sel.length !== 1) return null;
+  let node = sel[0];
+
+  // Instance → its main component.
+  if (node.type === 'INSTANCE') {
+    try { node = node.mainComponent; } catch (err) { return null; }
+  }
+  if (!node) return null;
+
+  // A bare variant → surface its parent set.
+  if (node.type === 'COMPONENT' && node.parent && node.parent.type === 'COMPONENT_SET') {
+    node = node.parent;
+  }
+  if (node.type !== 'COMPONENT' && node.type !== 'COMPONENT_SET') return null;
+
+  return componentChoiceFromNode(node, !!node.remote);
+}
+
 async function getComponentChoices() {
   const result = [];
   const seenKeys = new Set();
@@ -308,25 +352,8 @@ async function getComponentChoices() {
     const dedupeKey = node.key || node.id;
     if (seenKeys.has(dedupeKey)) return;
     seenKeys.add(dedupeKey);
-
-    // TEXT-type component properties are candidate slots for the label text.
-    const textProps = [];
-    try {
-      const defs = node.componentPropertyDefinitions || {};
-      for (const propName of Object.keys(defs)) {
-        if (defs[propName] && defs[propName].type === 'TEXT') textProps.push(propName);
-      }
-    } catch (err) {}
-
-    result.push({
-      key: node.key || null,
-      id: node.id,
-      name: node.name,
-      isSet: node.type === 'COMPONENT_SET',
-      isLibrary: !!isLibrary,
-      libraryName: isLibrary ? 'Library' : 'Local',
-      textProps: textProps,
-    });
+    const choice = componentChoiceFromNode(node, isLibrary);
+    if (choice) result.push(choice);
   }
 
   // Local components / sets. Prefer findAllWithCriteria (indexed) when present.
@@ -720,6 +747,15 @@ figma.ui.onmessage = async (msg) => {
     case 'refresh-components': {
       const componentOptions = await getComponentChoices();
       figma.ui.postMessage({ type: 'components', componentOptions });
+      break;
+    }
+
+    case 'capture-label-component': {
+      // Read the current selection and resolve it to a component/set choice.
+      // This is how the user picks a library component that isn't enumerable
+      // via the in-file scan — they just select it (or an instance of it).
+      const choice = captureComponentChoiceFromSelection();
+      figma.ui.postMessage({ type: 'label-component-captured', choice: choice || null });
       break;
     }
 

@@ -624,8 +624,9 @@
           </div>
         </div>
       </div>
+      <button class="btn btn-ghost" id="use-selection-label-btn" style="width:100%; margin-bottom:6px;">Use selected component as label</button>
       <p id="label-component-hint" style="font-size:11px; color:var(--dim); margin-bottom:14px;">
-        Pick a published component (e.g. a breakpoint label) from your libraries. Library components must be used somewhere in this file to appear here.
+        Select your label component (or an instance of it) on the canvas, then click “Use selected component” — this is the reliable way to pick a library component. The dropdown only lists components already used in this file.
       </p>
 
       <hr />
@@ -855,6 +856,14 @@ window.onmessage = (event) => {
     case 'components':
       state.componentOptions = msg.componentOptions || [];
       renderLabelComponentPicker();
+      break;
+
+    case 'label-component-captured':
+      if (!msg.choice) {
+        showStatus('Select a component or an instance of one, then try again.', 'error');
+        break;
+      }
+      applyLabelComponentChoice(msg.choice);
       break;
 
     case 'var-error':
@@ -1894,6 +1903,28 @@ function currentLabelComponentValue() {
   return '';
 }
 
+// Adopt a captured/selected component choice: merge it into the options list
+// (so the dropdown shows it), write it into settings, persist, and re-render.
+function applyLabelComponentChoice(choice) {
+  const val = componentOptionValue(choice);
+  const exists = (state.componentOptions || []).some(o => componentOptionValue(o) === val);
+  if (!exists) state.componentOptions = [choice].concat(state.componentOptions || []);
+
+  const s = state.settings;
+  s.labelComponentKey = choice.key || null;
+  s.labelComponentId = choice.id || null;
+  s.labelComponentName = choice.name || null;
+  s.labelComponentIsSet = !!choice.isSet;
+  s.labelComponentIsLibrary = !!choice.isLibrary;
+  const props = choice.textProps || [];
+  s.labelComponentTextProp = props.length === 1 ? props[0] : (s.labelComponentTextProp || null);
+
+  saveSettingsOnly();
+  renderLabelComponentPicker();
+  const propMsg = props.length ? '' : ' (no text properties found)';
+  showStatus(`✓ Label component set: ${choice.name}${propMsg}`, 'success');
+}
+
 // Populate the label-component <select> + its text-property <select> from
 // state.componentOptions and the saved settings.
 function renderLabelComponentPicker() {
@@ -2102,6 +2133,12 @@ document.getElementById('label-component-select').addEventListener('change', (e)
 document.getElementById('label-textprop-select').addEventListener('change', (e) => {
   state.settings.labelComponentTextProp = e.target.value || null;
   saveSettingsOnly();
+});
+
+// Capture the selected component (or instance of one) as the label component —
+// the reliable way to pick a library component not enumerable from the file.
+document.getElementById('use-selection-label-btn').addEventListener('click', () => {
+  send({ type: 'capture-label-component' });
 });
 
 document.getElementById('refresh-components-btn').addEventListener('click', (e) => {
