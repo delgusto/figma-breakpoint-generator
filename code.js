@@ -40,6 +40,14 @@ const DEFAULT_SETTINGS = {
   addLabels: true,
   clearWidthConstraints: false, // Off by default — preserves component constraints. Turn on to strip min/max width so clones resize freely.
   liveUpdates: true,            // When false, the plugin ignores selectionchange events entirely. User must click "Refresh selection" to detect variants on the current selection.
+  // Label component (PR A) — when set, the plugin instantiates this component
+  // above each clone instead of the plain Inter text label. Empty = text label.
+  labelComponentKey: null,      // Stable publish key (library) — preferred for import
+  labelComponentId: null,       // Local node id fallback for unpublished local components
+  labelComponentName: null,     // Display name, shown in the picker
+  labelComponentIsSet: false,   // True when the chosen node is a COMPONENT_SET (import via set API, use defaultVariant)
+  labelComponentIsLibrary: false, // True when the component is remote — import by key vs getNodeById
+  labelComponentTextProp: null, // Which TEXT component property receives the breakpoint name
 };
 
 // Mirrors settings.liveUpdates so the sandbox can short-circuit the debounce
@@ -65,9 +73,10 @@ async function init() {
   liveUpdatesEnabled = settings.liveUpdates !== false; // default true if absent
 
   // Read all FLOAT variables + multi-mode collections — both can be used as breakpoint links
-  const [variableOptions, modeOptions] = await Promise.all([
+  const [variableOptions, modeOptions, componentOptions] = await Promise.all([
     getFloatVariables(),
     getVariableCollectionModes(),
+    getComponentChoices(),
   ]);
 
   figma.ui.postMessage({
@@ -76,6 +85,7 @@ async function init() {
     settings,
     variableOptions,
     modeOptions,
+    componentOptions,
     defaultBreakpoints: defaultBreakpoints || null,
     preferredLibrary: preferredLibrary || null,
     filterToLibrary: !!filterToLibrary,
@@ -278,6 +288,174 @@ async function getVariableCollectionModes() {
   } catch (err) {}
 
   return result;
+}
+
+// ─── Component choices (label component picker) ───────────────────────────────
+
+// Enumerate components the user can pick as a label. Covers:
+//   • local COMPONENT / COMPONENT_SET nodes in the document
+//   • remote (library) components already in use somewhere in the file —
+//     surfaced via the mainComponent of existing instances
+// Runs only on init + explicit refresh-components (not on selection change),
+// since findAllWithCriteria over the whole document is not free.
+// Build a label-choice object from a COMPONENT or COMPONENT_SET node.
+function componentChoiceFromNode(node, isLibrary) {
+  if (!node) return null;
+  const textProps = [];
+  try {
+    const defs = node.componentPropertyDefinitions || {};
+    for (const propName of Object.keys(defs)) {
+      if (defs[propName] && defs[propName].type === 'TEXT') textProps.push(propName);
+    }
+  } catch (err) {}
+  return {
+    key: node.key || null,
+    id: node.id,
+    name: node.name,
+    isSet: node.type === 'COMPONENT_SET',
+    isLibrary: !!isLibrary,
+    libraryName: isLibrary ? 'Library' : 'Local',
+    textProps: textProps,
+  };
+}
+
+// Resolve any selected node (instance / component / variant) up to the
+// component or set the user means to use as a label. Returns a choice object
+// or null when the selection isn't component-backed.
+function captureComponentChoiceFromSelection() {
+  const sel = figma.currentPage.selection;
+  if (sel.length !== 1) return null;
+  let node = sel[0];
+
+  // Instance → its main component.
+  if (node.type === 'INSTANCE') {
+    try { node = node.mainComponent; } catch (err) { return null; }
+  }
+  if (!node) return null;
+
+  // A bare variant → surface its parent set.
+  if (node.type === 'COMPONENT' && node.parent && node.parent.type === 'COMPONENT_SET') {
+    node = node.parent;
+  }
+  if (node.type !== 'COMPONENT' && node.type !== 'COMPONENT_SET') return null;
+
+  return componentChoiceFromNode(node, !!node.remote);
+}
+
+async function getComponentChoices() {
+  const result = [];
+  const seenKeys = new Set();
+  const MAX = 600;
+
+  function pushComponent(node, isLibrary) {
+    if (!node || result.length >= MAX) return;
+    const dedupeKey = node.key || node.id;
+    if (seenKeys.has(dedupeKey)) return;
+    seenKeys.add(dedupeKey);
+    const choice = componentChoiceFromNode(node, isLibrary);
+    if (choice) result.push(choice);
+  }
+
+  // Local components / sets. Prefer findAllWithCriteria (indexed) when present.
+  try {
+    const locals = figma.root.findAllWithCriteria
+      ? figma.root.findAllWithCriteria({ types: ['COMPONENT', 'COMPONENT_SET'] })
+      : figma.root.findAll(n => n.type === 'COMPONENT' || n.type === 'COMPONENT_SET');
+    for (const node of locals) {
+      if (result.length >= MAX) break;
+      // Skip a variant child — surface its parent set instead (handled below).
+      if (node.type === 'COMPONENT' && node.parent && node.parent.type === 'COMPONENT_SET') continue;
+      pushComponent(node, false);
+    }
+  } catch (err) {}
+
+  // Remote (library) components in use — read each instance's mainComponent.
+  try {
+    const instances = figma.root.findAllWithCriteria
+      ? figma.root.findAllWithCriteria({ types: ['INSTANCE'] })
+      : figma.root.findAll(n => n.type === 'INSTANCE');
+    for (const inst of instances) {
+      if (result.length >= MAX) break;
+      try {
+        const main = inst.mainComponent;
+        if (!main || !main.remote) continue;
+        const target = (main.parent && main.parent.type === 'COMPONENT_SET') ? main.parent : main;
+        pushComponent(target, true);
+      } catch (err) {}
+    }
+  } catch (err) {}
+
+  // Stable sort by library then name so the picker list is predictable.
+  result.sort(function(a, b) {
+    if (a.libraryName !== b.libraryName) return a.libraryName < b.libraryName ? -1 : 1;
+    return String(a.name).localeCompare(String(b.name));
+  });
+
+  return result;
+}
+
+// Resolve the configured label component to a main ComponentNode ready to
+// instantiate. Library → import by key; local → look up by node id. For sets,
+// return the default variant. Null when not configured or unresolvable.
+async function resolveLabelMainComponent(settings) {
+  if (!settings || !settings.addLabels) return null;
+  const key = settings.labelComponentKey;
+  const id = settings.labelComponentId;
+  if (!key && !id) return null;
+
+  try {
+    if (settings.labelComponentIsLibrary && key) {
+      if (settings.labelComponentIsSet) {
+        const set = await figma.importComponentSetByKeyAsync(key);
+        return set ? (set.defaultVariant || null) : null;
+      }
+      return await figma.importComponentByKeyAsync(key);
+    }
+    // Local component — id is stable within the file.
+    if (id) {
+      const node = figma.getNodeById ? figma.getNodeById(id) : null;
+      if (!node) return null;
+      if (node.type === 'COMPONENT_SET') return node.defaultVariant || null;
+      if (node.type === 'COMPONENT') return node;
+    }
+  } catch (err) {}
+  return null;
+}
+
+// Load every font used by a text node so its characters can be edited.
+async function loadFontsForTextNode(node) {
+  try {
+    const len = Math.max(1, node.characters.length);
+    const fonts = node.getRangeAllFontNames(0, len);
+    await Promise.all(fonts.map(f => figma.loadFontAsync(f)));
+    return true;
+  } catch (err) {
+    try {
+      if (node.fontName && node.fontName !== figma.mixed) {
+        await figma.loadFontAsync(node.fontName);
+        return true;
+      }
+    } catch (err2) {}
+  }
+  return false;
+}
+
+// Write the breakpoint label into a label-component instance. Prefers a real
+// TEXT component property when one is configured; otherwise falls back to the
+// first editable TEXT layer inside the instance (the common case for label
+// components that just contain a text node, no exposed property).
+async function setInstanceLabelText(inst, textProp, text) {
+  if (textProp) {
+    try { inst.setProperties({ [textProp]: text }); return true; } catch (err) {}
+  }
+  try {
+    const textNode = inst.findOne(n => n.type === 'TEXT');
+    if (textNode) {
+      const ok = await loadFontsForTextNode(textNode);
+      if (ok) { textNode.characters = text; return true; }
+    }
+  } catch (err) {}
+  return false;
 }
 
 async function resolveWidth(bp) {
@@ -559,12 +737,13 @@ figma.ui.onmessage = async (msg) => {
         figma.clientStorage.deleteAsync('settings'),
       ]);
       // Library prefs + user defaults survive a reset.
-      const [defaultBreakpoints, preferredLibrary, filterToLibrary, variableOptions, modeOptions] = await Promise.all([
+      const [defaultBreakpoints, preferredLibrary, filterToLibrary, variableOptions, modeOptions, componentOptions] = await Promise.all([
         figma.clientStorage.getAsync('defaultBreakpoints'),
         figma.clientStorage.getAsync('preferredLibrary'),
         figma.clientStorage.getAsync('filterToLibrary'),
         getFloatVariables(),
         getVariableCollectionModes(),
+        getComponentChoices(),
       ]);
       figma.ui.postMessage({
         type: 'init',
@@ -573,6 +752,7 @@ figma.ui.onmessage = async (msg) => {
         settings: DEFAULT_SETTINGS,
         variableOptions,
         modeOptions,
+        componentOptions,
         defaultBreakpoints: defaultBreakpoints || null,
         preferredLibrary: preferredLibrary || null,
         filterToLibrary: !!filterToLibrary,
@@ -597,6 +777,21 @@ figma.ui.onmessage = async (msg) => {
         getVariableCollectionModes(),
       ]);
       figma.ui.postMessage({ type: 'variables', variableOptions, modeOptions });
+      break;
+    }
+
+    case 'refresh-components': {
+      const componentOptions = await getComponentChoices();
+      figma.ui.postMessage({ type: 'components', componentOptions });
+      break;
+    }
+
+    case 'capture-label-component': {
+      // Read the current selection and resolve it to a component/set choice.
+      // This is how the user picks a library component that isn't enumerable
+      // via the in-file scan — they just select it (or an instance of it).
+      const choice = captureComponentChoiceFromSelection();
+      figma.ui.postMessage({ type: 'label-component-captured', choice: choice || null });
       break;
     }
 
@@ -636,6 +831,11 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
     ]);
   }
 
+  // Resolve the label component once (if configured). When it fails to resolve
+  // we fall back to the plain text label so the run still completes.
+  const labelMain = settings.addLabels ? await resolveLabelMainComponent(settings) : null;
+  const labelTextProp = settings.labelComponentTextProp || null;
+
   // Resolve variable-bound widths for the fallback (static & variable-linked cases).
   // Mode-linked breakpoints fall back to bp.width here; their *actual* width is
   // read from the clone after setExplicitVariableModeForCollection is applied.
@@ -654,6 +854,7 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
   // of the previous one, using the *actual* post-layout width.
   let cursor = source.x + source.width + GAP;
   const generated = [];
+  const cloneNodes = []; // clones only — used for the final selection
 
   for (const bp of resolved) {
     const clone = source.clone();
@@ -713,17 +914,35 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
     clone.x = cursor;
 
     if (settings.addLabels) {
-      const label = makeLabel(bp.label, Math.round(actualWidth), cursor, baseY - LABEL_ABOVE);
-      generated.push(...label);
+      let placedComponentLabel = false;
+      if (labelMain) {
+        try {
+          const inst = labelMain.createInstance();
+          if (inst.parent !== parent) parent.appendChild(inst);
+          // Set the label text first (may reflow/resize the instance), then
+          // position it just above the clone's top edge.
+          await setInstanceLabelText(inst, labelTextProp, bp.label);
+          inst.x = cursor;
+          inst.y = baseY - inst.height - 8;
+          generated.push(inst);
+          placedComponentLabel = true;
+        } catch (err) {
+          // fall through to the text label
+        }
+      }
+      if (!placedComponentLabel) {
+        const label = makeLabel(bp.label, Math.round(actualWidth), cursor, baseY - LABEL_ABOVE);
+        generated.push(...label);
+      }
     }
 
     generated.push(clone);
+    cloneNodes.push(clone);
     cursor += actualWidth + GAP;
   }
 
-  // Select only the cloned frames (not text labels)
-  const clones = generated.filter(n => n.type !== 'TEXT');
-  figma.currentPage.selection = clones;
+  // Select only the cloned frames (not labels — text or component instances)
+  figma.currentPage.selection = cloneNodes;
   figma.viewport.scrollAndZoomIntoView(generated);
 
   return resolved.length;
