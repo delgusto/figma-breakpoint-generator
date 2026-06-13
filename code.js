@@ -422,6 +422,42 @@ async function resolveLabelMainComponent(settings) {
   return null;
 }
 
+// Load every font used by a text node so its characters can be edited.
+async function loadFontsForTextNode(node) {
+  try {
+    const len = Math.max(1, node.characters.length);
+    const fonts = node.getRangeAllFontNames(0, len);
+    await Promise.all(fonts.map(f => figma.loadFontAsync(f)));
+    return true;
+  } catch (err) {
+    try {
+      if (node.fontName && node.fontName !== figma.mixed) {
+        await figma.loadFontAsync(node.fontName);
+        return true;
+      }
+    } catch (err2) {}
+  }
+  return false;
+}
+
+// Write the breakpoint label into a label-component instance. Prefers a real
+// TEXT component property when one is configured; otherwise falls back to the
+// first editable TEXT layer inside the instance (the common case for label
+// components that just contain a text node, no exposed property).
+async function setInstanceLabelText(inst, textProp, text) {
+  if (textProp) {
+    try { inst.setProperties({ [textProp]: text }); return true; } catch (err) {}
+  }
+  try {
+    const textNode = inst.findOne(n => n.type === 'TEXT');
+    if (textNode) {
+      const ok = await loadFontsForTextNode(textNode);
+      if (ok) { textNode.characters = text; return true; }
+    }
+  } catch (err) {}
+  return false;
+}
+
 async function resolveWidth(bp) {
   try {
     var variable = null;
@@ -883,12 +919,11 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
         try {
           const inst = labelMain.createInstance();
           if (inst.parent !== parent) parent.appendChild(inst);
-          // Sit the instance just above the clone's top edge.
+          // Set the label text first (may reflow/resize the instance), then
+          // position it just above the clone's top edge.
+          await setInstanceLabelText(inst, labelTextProp, bp.label);
           inst.x = cursor;
           inst.y = baseY - inst.height - 8;
-          if (labelTextProp) {
-            try { inst.setProperties({ [labelTextProp]: bp.label }); } catch (err) {}
-          }
           generated.push(inst);
           placedComponentLabel = true;
         } catch (err) {

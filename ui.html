@@ -1921,7 +1921,7 @@ function applyLabelComponentChoice(choice) {
 
   saveSettingsOnly();
   renderLabelComponentPicker();
-  const propMsg = props.length ? '' : ' (no text properties found)';
+  const propMsg = props.length ? '' : ' — text goes to its first text layer';
   showStatus(`✓ Label component set: ${choice.name}${propMsg}`, 'success');
 }
 
@@ -1963,13 +1963,15 @@ function renderLabelComponentPicker() {
     propSelect.disabled = true;
     propSelect.style.opacity = '0.5';
   } else if (!textProps.length) {
-    propSelect.innerHTML = '<option value="">No text properties</option>';
+    // No exposed TEXT property — the plugin sets the first text layer inside
+    // the instance automatically. Surface that instead of an error.
+    propSelect.innerHTML = '<option value="">Auto — first text layer</option>';
     propSelect.disabled = true;
     propSelect.style.opacity = '0.5';
   } else {
     propSelect.disabled = false;
     propSelect.style.opacity = '1';
-    propSelect.innerHTML = ['<option value="">— don’t set text —</option>']
+    propSelect.innerHTML = ['<option value="">Auto — first text layer</option>']
       .concat(textProps.map(p => {
         // Component property names are stored as "Name#id"; show only the name.
         const display = String(p).split('#')[0];
@@ -1983,8 +1985,11 @@ function renderLabelComponentPicker() {
     if (!haveCurrent && currentVal) {
       hint.textContent = '⚠ Saved component not found in this file. Use it somewhere here, then Refresh — or pick another.';
       hint.style.color = 'var(--red)';
+    } else if (currentVal) {
+      hint.textContent = 'The breakpoint name is written into the chosen text property, or — when there’s no exposed property — into the first text layer inside the component.';
+      hint.style.color = 'var(--dim)';
     } else {
-      hint.textContent = 'Pick a published component (e.g. a breakpoint label) from your libraries. Library components must be used somewhere in this file to appear here.';
+      hint.textContent = 'Select your label component (or an instance of it) on the canvas, then click “Use selected component”. The dropdown only lists components already used in this file.';
       hint.style.color = 'var(--dim)';
     }
   }
