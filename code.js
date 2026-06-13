@@ -48,6 +48,17 @@ const DEFAULT_SETTINGS = {
   labelComponentIsSet: false,   // True when the chosen node is a COMPONENT_SET (import via set API, use defaultVariant)
   labelComponentIsLibrary: false, // True when the component is remote — import by key vs getNodeById
   labelComponentTextProp: null, // Which TEXT component property receives the breakpoint name
+  // Light/dark sections (PR B) — when a collection + both modes are set, the
+  // plugin wraps the generated breakpoints in two Sections (light + dark),
+  // each with the appearance variable mode applied. Empty = no sections.
+  appearanceDisabled: false,    // True once the user explicitly picks "None" — suppresses auto-detect
+  appearanceCollectionId: null,
+  appearanceCollectionKey: null,
+  appearanceCollectionName: null,
+  lightModeId: null,
+  lightModeName: null,
+  darkModeId: null,
+  darkModeName: null,
 };
 
 // Mirrors settings.liveUpdates so the sandbox can short-circuit the debounce
@@ -290,6 +301,72 @@ async function getVariableCollectionModes() {
   return result;
 }
 
+// Collect variable ids referenced by a single node (node-level bindings +
+// per-paint color bindings on fills/strokes).
+function collectVarIdsFromNode(n, set) {
+  const bv = n.boundVariables;
+  if (bv) {
+    for (const key of Object.keys(bv)) {
+      const val = bv[key];
+      if (Array.isArray(val)) {
+        for (const a of val) { if (a && a.id) set.add(a.id); }
+      } else if (val && val.id) {
+        set.add(val.id);
+      } else if (val && typeof val === 'object') {
+        for (const k of Object.keys(val)) { const a = val[k]; if (a && a.id) set.add(a.id); }
+      }
+    }
+  }
+  for (const prop of ['fills', 'strokes']) {
+    const paints = n[prop];
+    if (Array.isArray(paints)) {
+      for (const p of paints) {
+        if (p && p.boundVariables && p.boundVariables.color && p.boundVariables.color.id) {
+          set.add(p.boundVariables.color.id);
+        }
+      }
+    }
+  }
+}
+
+// Walk the selected node's subtree, gather every variable it binds, and return
+// the multi-mode collections those variables belong to. This surfaces the
+// collection the content ACTUALLY consumes — which the blanket library
+// enumeration may miss (e.g. it found an unrelated kit instead).
+async function getCollectionsUsedByNode(root) {
+  if (!root) return [];
+  const varIds = new Set();
+  const nodes = [root];
+  if ('findAll' in root) {
+    try {
+      const all = root.findAll(function() { return true; });
+      for (let i = 0; i < all.length && nodes.length < 4000; i++) nodes.push(all[i]);
+    } catch (err) {}
+  }
+  for (const n of nodes) {
+    try { collectVarIdsFromNode(n, varIds); } catch (err) {}
+  }
+
+  const colById = new Map();
+  for (const id of varIds) {
+    try {
+      const v = await figma.variables.getVariableByIdAsync(id);
+      if (!v) continue;
+      const col = await figma.variables.getVariableCollectionByIdAsync(v.variableCollectionId);
+      if (!col || !col.modes || col.modes.length < 2) continue;
+      if (colById.has(col.id)) continue;
+      colById.set(col.id, {
+        collectionId: col.id,
+        collectionKey: col.key || null,
+        collectionName: col.name,
+        libraryName: col.remote ? 'Library' : 'Local',
+        modes: col.modes.map(function(m) { return { modeId: m.modeId, modeName: m.name }; }),
+      });
+    } catch (err) {}
+  }
+  return Array.from(colById.values());
+}
+
 // ─── Component choices (label component picker) ───────────────────────────────
 
 // Enumerate components the user can pick as a label. Covers:
@@ -500,6 +577,16 @@ function sendSelection() {
   const node = source ? figma.getNodeById(source.id) : null;
   const variantSchema = node ? detectVariantSchema(node) : null;
   figma.ui.postMessage({ type: 'selection', source, variantSchema });
+
+  // Auto-detect the appearance collection(s) the source uses and ship them as
+  // an automatic (non-toast) update so the appearance picker can pre-fill.
+  if (node) {
+    getCollectionsUsedByNode(node).then(function(collections) {
+      figma.ui.postMessage({ type: 'source-collections', collections, auto: true });
+    }).catch(function() {});
+  } else {
+    figma.ui.postMessage({ type: 'source-collections', collections: [], auto: true });
+  }
 }
 
 // Walk the selected node (and its descendants) and return every component set
@@ -786,6 +873,16 @@ figma.ui.onmessage = async (msg) => {
       break;
     }
 
+    case 'detect-source-collections': {
+      // Scan the current selection's subtree for the multi-mode collections it
+      // actually uses, so the appearance picker can offer the right one.
+      const sel = figma.currentPage.selection;
+      const node = sel.length === 1 ? sel[0] : null;
+      const collections = node ? await getCollectionsUsedByNode(node) : [];
+      figma.ui.postMessage({ type: 'source-collections', collections });
+      break;
+    }
+
     case 'capture-label-component': {
       // Read the current selection and resolve it to a component/set choice.
       // This is how the user picks a library component that isn't enumerable
@@ -941,11 +1038,118 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
     cursor += actualWidth + GAP;
   }
 
+  // Optionally wrap everything in light + dark Sections.
+  if (appearanceConfigured(settings)) {
+    const sections = await wrapInLightDarkSections(generated, source, settings, GAP);
+    if (sections && sections.light) {
+      const sel = sections.dark ? [sections.light, sections.dark] : [sections.light];
+      figma.currentPage.selection = sel;
+      figma.viewport.scrollAndZoomIntoView(sel);
+      return resolved.length;
+    }
+  }
+
   // Select only the cloned frames (not labels — text or component instances)
   figma.currentPage.selection = cloneNodes;
   figma.viewport.scrollAndZoomIntoView(generated);
 
   return resolved.length;
+}
+
+// ─── Light/dark sections (PR B) ───────────────────────────────────────────────
+
+function appearanceConfigured(settings) {
+  return !!(settings &&
+    settings.lightModeId && settings.darkModeId &&
+    (settings.appearanceCollectionId || settings.appearanceCollectionKey));
+}
+
+// Move a node to an absolute page position regardless of its parent's
+// coordinate model. Sets x/y, measures the resulting absolute origin, and
+// corrects for any offset — so it works whether SectionNode children are
+// page-absolute or section-relative (which differs by Figma version).
+function setAbsPos(node, x, y) {
+  try {
+    node.x = x; node.y = y;
+    const t = node.absoluteTransform;
+    const ex = x - t[0][2];
+    const ey = y - t[1][2];
+    if (ex || ey) { node.x = x + ex; node.y = y + ey; }
+  } catch (err) {}
+}
+
+// Wrap the generated nodes in a "— Light" Section with the light appearance
+// mode applied, then clone it into a sibling "— Dark" Section with the dark
+// mode applied. Returns { light, dark } or null when not configured / failed.
+async function wrapInLightDarkSections(generated, source, settings, GAP) {
+  if (!generated.length) return null;
+  const collection = await resolveCollectionByKeyOrId(
+    settings.appearanceCollectionId, settings.appearanceCollectionKey);
+  if (!collection) return null;
+
+  const page = figma.currentPage;
+  const PAD = 80;
+
+  // Capture each node's true page position BEFORE re-parenting — these are the
+  // coordinates we want the content to keep, independent of section quirks.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const targets = [];
+  for (const n of generated) {
+    const t = n.absoluteTransform;
+    const x = t[0][2], y = t[1][2];
+    targets.push({ node: n, x: x, y: y });
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + n.width);
+    maxY = Math.max(maxY, y + n.height);
+  }
+  if (!isFinite(minX)) return null;
+
+  const w = (maxX - minX) + PAD * 2;
+  const h = (maxY - minY) + PAD * 2;
+
+  const light = figma.createSection();
+  light.name = `${source.name} — Light`;
+  page.appendChild(light);
+  for (const t of targets) {
+    try { light.appendChild(t.node); } catch (err) {}
+  }
+
+  // Position + size the section, then pin every child back to its captured
+  // page position (model-agnostic). Section first, children after — so any
+  // drift from moving the section is corrected.
+  setAbsPos(light, minX - PAD, minY - PAD);
+  try {
+    if (light.resizeWithoutConstraints) light.resizeWithoutConstraints(w, h);
+    else light.resize(w, h);
+  } catch (err) {}
+  for (const t of targets) setAbsPos(t.node, t.x, t.y);
+
+  try {
+    if (light.setExplicitVariableModeForCollection) {
+      light.setExplicitVariableModeForCollection(collection, settings.lightModeId);
+    }
+  } catch (err) {}
+
+  // Dark clone, stacked below the light section by its height + gap. Pin its
+  // children to the light targets plus the same vertical offset, so it doesn't
+  // matter whether the section move dragged them or not.
+  let dark = null;
+  try {
+    dark = light.clone();
+    dark.name = `${source.name} — Dark`;
+    const offsetY = h + GAP;
+    setAbsPos(dark, minX - PAD, (minY - PAD) + offsetY);
+    const dchildren = dark.children;
+    for (let i = 0; i < dchildren.length && i < targets.length; i++) {
+      setAbsPos(dchildren[i], targets[i].x, targets[i].y + offsetY);
+    }
+    if (dark.setExplicitVariableModeForCollection) {
+      dark.setExplicitVariableModeForCollection(collection, settings.darkModeId);
+    }
+  } catch (err) {}
+
+  return { light: light, dark: dark };
 }
 
 // ─── Variant helper ───────────────────────────────────────────────────────────
@@ -1021,16 +1225,19 @@ function applyAutoLayoutWidth(frame, targetWidth) {
 // Resolve the VariableCollection referenced by a mode-linked breakpoint.
 // Tries the local id first, then imports the first variable of the library collection
 // so Figma can surface the collection object via getVariableCollectionByIdAsync.
-async function resolveCollection(bp) {
-  if (bp.modeCollectionId) {
+// Resolve a VariableCollection from a local id and/or a library key. Library
+// collections are reached by importing one of their variables (same trick the
+// breakpoint mode flow uses).
+async function resolveCollectionByKeyOrId(collectionId, collectionKey) {
+  if (collectionId) {
     try {
-      const col = await figma.variables.getVariableCollectionByIdAsync(bp.modeCollectionId);
+      const col = await figma.variables.getVariableCollectionByIdAsync(collectionId);
       if (col) return col;
     } catch (err) { /* fall through */ }
   }
-  if (bp.modeCollectionKey) {
+  if (collectionKey) {
     try {
-      const libVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(bp.modeCollectionKey);
+      const libVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collectionKey);
       if (libVars && libVars.length) {
         const imported = await figma.variables.importVariableByKeyAsync(libVars[0].key);
         if (imported) {
@@ -1040,6 +1247,10 @@ async function resolveCollection(bp) {
     } catch (err) { /* fall through */ }
   }
   return null;
+}
+
+async function resolveCollection(bp) {
+  return resolveCollectionByKeyOrId(bp.modeCollectionId, bp.modeCollectionKey);
 }
 
 // ─── Label helper ─────────────────────────────────────────────────────────────
