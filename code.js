@@ -83,11 +83,13 @@ async function init() {
   const settings = savedSettings || DEFAULT_SETTINGS;
   liveUpdatesEnabled = settings.liveUpdates !== false; // default true if absent
 
-  // Read all FLOAT variables + multi-mode collections — both can be used as breakpoint links
-  const [variableOptions, modeOptions, componentOptions] = await Promise.all([
+  // Read all FLOAT variables + multi-mode collections — both can be used as breakpoint links.
+  // NOTE: component enumeration (getComponentChoices) is deliberately NOT run here.
+  // It scans the whole document for instances and can hang/crash a large file on
+  // open. It runs on demand instead, when the user opens the label picker's Refresh.
+  const [variableOptions, modeOptions] = await Promise.all([
     getFloatVariables(),
     getVariableCollectionModes(),
-    getComponentChoices(),
   ]);
 
   figma.ui.postMessage({
@@ -96,7 +98,7 @@ async function init() {
     settings,
     variableOptions,
     modeOptions,
-    componentOptions,
+    componentOptions: [],
     defaultBreakpoints: defaultBreakpoints || null,
     preferredLibrary: preferredLibrary || null,
     filterToLibrary: !!filterToLibrary,
@@ -335,20 +337,25 @@ function collectVarIdsFromNode(n, set) {
 // enumeration may miss (e.g. it found an unrelated kit instead).
 async function getCollectionsUsedByNode(root) {
   if (!root) return [];
+
+  // Bounded BFS — don't let findAll allocate a huge array on a giant subtree.
+  const MAX_NODES = 6000;
+  const MAX_VARS = 400;
   const varIds = new Set();
-  const nodes = [root];
-  if ('findAll' in root) {
-    try {
-      const all = root.findAll(function() { return true; });
-      for (let i = 0; i < all.length && nodes.length < 4000; i++) nodes.push(all[i]);
-    } catch (err) {}
-  }
-  for (const n of nodes) {
+  const queue = [root];
+  let visited = 0;
+  while (queue.length && visited < MAX_NODES && varIds.size < MAX_VARS) {
+    const n = queue.shift();
+    visited++;
     try { collectVarIdsFromNode(n, varIds); } catch (err) {}
+    if ('children' in n && n.children) {
+      for (const c of n.children) queue.push(c);
+    }
   }
 
   const colById = new Map();
   for (const id of varIds) {
+    if (colById.size >= 8) break; // a handful of collections is plenty for the picker
     try {
       const v = await figma.variables.getVariableByIdAsync(id);
       if (!v) continue;
@@ -447,14 +454,18 @@ async function getComponentChoices() {
   } catch (err) {}
 
   // Remote (library) components in use — read each instance's mainComponent.
+  // Cap how many instances we inspect: reading mainComponent per instance is
+  // the expensive part, and a large file can have tens of thousands of them.
+  const MAX_INSTANCE_SCAN = 8000;
   try {
     const instances = figma.root.findAllWithCriteria
       ? figma.root.findAllWithCriteria({ types: ['INSTANCE'] })
       : figma.root.findAll(n => n.type === 'INSTANCE');
-    for (const inst of instances) {
+    const limit = Math.min(instances.length, MAX_INSTANCE_SCAN);
+    for (let i = 0; i < limit; i++) {
       if (result.length >= MAX) break;
       try {
-        const main = inst.mainComponent;
+        const main = instances[i].mainComponent;
         if (!main || !main.remote) continue;
         const target = (main.parent && main.parent.type === 'COMPONENT_SET') ? main.parent : main;
         pushComponent(target, true);
@@ -575,18 +586,13 @@ function getSourceNode() {
 function sendSelection() {
   const source = getSourceNode();
   const node = source ? figma.getNodeById(source.id) : null;
+  // Variant detection is the only per-selection scan. It's depth- and
+  // budget-capped (see collectInstancesWithDepth) so a huge selection can't
+  // hang Figma. Appearance-collection detection is NOT run here — it walks the
+  // whole subtree and resolves variables, which is too heavy for the hot path;
+  // it runs only when the user clicks "Detect from selected frame".
   const variantSchema = node ? detectVariantSchema(node) : null;
   figma.ui.postMessage({ type: 'selection', source, variantSchema });
-
-  // Auto-detect the appearance collection(s) the source uses and ship them as
-  // an automatic (non-toast) update so the appearance picker can pre-fill.
-  if (node) {
-    getCollectionsUsedByNode(node).then(function(collections) {
-      figma.ui.postMessage({ type: 'source-collections', collections, auto: true });
-    }).catch(function() {});
-  } else {
-    figma.ui.postMessage({ type: 'source-collections', collections: [], auto: true });
-  }
 }
 
 // Walk the selected node (and its descendants) and return every component set
@@ -693,11 +699,18 @@ function buildSchemaForSetUncached(set) {
 // every leaf node of a deeply nested layout just to find buttons that we'd
 // rank low anyway is wasted work that lags Figma during selection drags.
 const MAX_DETECT_DEPTH = 8;
+// Hard budgets so selecting a huge frame/section can't lock up or crash Figma.
+// We stop visiting once either cap is hit and detection works on what we have.
+const MAX_DETECT_NODES = 6000;     // total nodes the BFS will touch
+const MAX_DETECT_INSTANCES = 1500; // instances we'll collect before stopping
 
 function collectInstancesWithDepth(root) {
   const results = [];
   const queue = [{ node: root, depth: 0 }];
+  let visited = 0;
   while (queue.length) {
+    if (visited >= MAX_DETECT_NODES || results.length >= MAX_DETECT_INSTANCES) break;
+    visited++;
     const { node, depth } = queue.shift();
     if (node.type === 'INSTANCE') results.push({ inst: node, depth });
     if (depth >= MAX_DETECT_DEPTH) continue;
@@ -823,14 +836,14 @@ figma.ui.onmessage = async (msg) => {
         figma.clientStorage.deleteAsync('breakpoints'),
         figma.clientStorage.deleteAsync('settings'),
       ]);
-      // Library prefs + user defaults survive a reset.
-      const [defaultBreakpoints, preferredLibrary, filterToLibrary, variableOptions, modeOptions, componentOptions] = await Promise.all([
+      // Library prefs + user defaults survive a reset. Component enumeration is
+      // on-demand (not run here) to keep large files responsive.
+      const [defaultBreakpoints, preferredLibrary, filterToLibrary, variableOptions, modeOptions] = await Promise.all([
         figma.clientStorage.getAsync('defaultBreakpoints'),
         figma.clientStorage.getAsync('preferredLibrary'),
         figma.clientStorage.getAsync('filterToLibrary'),
         getFloatVariables(),
         getVariableCollectionModes(),
-        getComponentChoices(),
       ]);
       figma.ui.postMessage({
         type: 'init',
@@ -839,7 +852,7 @@ figma.ui.onmessage = async (msg) => {
         settings: DEFAULT_SETTINGS,
         variableOptions,
         modeOptions,
-        componentOptions,
+        componentOptions: [],
         defaultBreakpoints: defaultBreakpoints || null,
         preferredLibrary: preferredLibrary || null,
         filterToLibrary: !!filterToLibrary,
