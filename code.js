@@ -84,9 +84,8 @@ async function init() {
   liveUpdatesEnabled = settings.liveUpdates !== false; // default true if absent
 
   // Read all FLOAT variables + multi-mode collections — both can be used as breakpoint links.
-  // NOTE: component enumeration (getComponentChoices) is deliberately NOT run here.
-  // It scans the whole document for instances and can hang/crash a large file on
-  // open. It runs on demand instead, when the user opens the label picker's Refresh.
+  // The label component is captured from the canvas selection (no document-wide
+  // component scan), so there's nothing component-related to load here.
   const [variableOptions, modeOptions] = await Promise.all([
     getFloatVariables(),
     getVariableCollectionModes(),
@@ -376,12 +375,6 @@ async function getCollectionsUsedByNode(root) {
 
 // ─── Component choices (label component picker) ───────────────────────────────
 
-// Enumerate components the user can pick as a label. Covers:
-//   • local COMPONENT / COMPONENT_SET nodes in the document
-//   • remote (library) components already in use somewhere in the file —
-//     surfaced via the mainComponent of existing instances
-// Runs only on init + explicit refresh-components (not on selection change),
-// since findAllWithCriteria over the whole document is not free.
 // Build a label-choice object from a COMPONENT or COMPONENT_SET node.
 function componentChoiceFromNode(node, isLibrary) {
   if (!node) return null;
@@ -424,62 +417,6 @@ function captureComponentChoiceFromSelection() {
   if (node.type !== 'COMPONENT' && node.type !== 'COMPONENT_SET') return null;
 
   return componentChoiceFromNode(node, !!node.remote);
-}
-
-async function getComponentChoices() {
-  const result = [];
-  const seenKeys = new Set();
-  const MAX = 600;
-
-  function pushComponent(node, isLibrary) {
-    if (!node || result.length >= MAX) return;
-    const dedupeKey = node.key || node.id;
-    if (seenKeys.has(dedupeKey)) return;
-    seenKeys.add(dedupeKey);
-    const choice = componentChoiceFromNode(node, isLibrary);
-    if (choice) result.push(choice);
-  }
-
-  // Local components / sets. Prefer findAllWithCriteria (indexed) when present.
-  try {
-    const locals = figma.root.findAllWithCriteria
-      ? figma.root.findAllWithCriteria({ types: ['COMPONENT', 'COMPONENT_SET'] })
-      : figma.root.findAll(n => n.type === 'COMPONENT' || n.type === 'COMPONENT_SET');
-    for (const node of locals) {
-      if (result.length >= MAX) break;
-      // Skip a variant child — surface its parent set instead (handled below).
-      if (node.type === 'COMPONENT' && node.parent && node.parent.type === 'COMPONENT_SET') continue;
-      pushComponent(node, false);
-    }
-  } catch (err) {}
-
-  // Remote (library) components in use — read each instance's mainComponent.
-  // Cap how many instances we inspect: reading mainComponent per instance is
-  // the expensive part, and a large file can have tens of thousands of them.
-  const MAX_INSTANCE_SCAN = 8000;
-  try {
-    const instances = figma.root.findAllWithCriteria
-      ? figma.root.findAllWithCriteria({ types: ['INSTANCE'] })
-      : figma.root.findAll(n => n.type === 'INSTANCE');
-    const limit = Math.min(instances.length, MAX_INSTANCE_SCAN);
-    for (let i = 0; i < limit; i++) {
-      if (result.length >= MAX) break;
-      try {
-        const main = instances[i].mainComponent;
-        if (!main || !main.remote) continue;
-        const target = (main.parent && main.parent.type === 'COMPONENT_SET') ? main.parent : main;
-        pushComponent(target, true);
-      } catch (err) {}
-    }
-  } catch (err) {}
-
-  // Stable sort by library then name so the picker list is predictable.
-  result.sort(function(a, b) {
-    if (a.libraryName !== b.libraryName) return a.libraryName < b.libraryName ? -1 : 1;
-    return String(a.name).localeCompare(String(b.name));
-  });
-
-  return result;
 }
 
 // Resolve the configured label component to a main ComponentNode ready to
@@ -877,12 +814,6 @@ figma.ui.onmessage = async (msg) => {
         getVariableCollectionModes(),
       ]);
       figma.ui.postMessage({ type: 'variables', variableOptions, modeOptions });
-      break;
-    }
-
-    case 'refresh-components': {
-      const componentOptions = await getComponentChoices();
-      figma.ui.postMessage({ type: 'components', componentOptions });
       break;
     }
 

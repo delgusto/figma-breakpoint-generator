@@ -602,31 +602,31 @@
 
         <!-- Expandable: only relevant when labels are on -->
         <div id="label-options" style="display:none; border-top:1px solid var(--border2); padding:10px 0 4px;">
-          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
-            <div class="subgroup-label">Label component</div>
-            <button class="btn-ghost" id="refresh-components-btn" style="padding:4px 8px; font-size:10px;">Refresh list</button>
-          </div>
-          <div class="setting-row stacked" style="padding-top:0;">
-            <div>
-              <div class="setting-sub" style="margin-top:0;">Used instead of the plain text label. Leave as “Text label” to keep the default.</div>
-            </div>
-            <div class="setting-control">
-              <select id="label-component-select" style="width:100%; text-overflow:ellipsis;"></select>
-            </div>
-          </div>
-          <div class="setting-row stacked">
-            <div>
-              <div class="setting-label">Text property</div>
-              <div class="setting-sub">Which text receives the breakpoint name.</div>
-            </div>
-            <div class="setting-control">
-              <select id="label-textprop-select" style="width:100%; text-overflow:ellipsis;"></select>
-            </div>
-          </div>
-          <button class="btn btn-ghost" id="use-selection-label-btn" style="width:100%; margin:6px 0 0;">Use selected component as label</button>
-          <p id="label-component-hint" style="font-size:11px; color:var(--dim); margin:8px 0 2px;">
-            Select your label component (or an instance of it) on the canvas, then click “Use selected component” — the reliable way to pick a library component.
+          <div class="subgroup-label" style="margin-bottom:6px;">Label component</div>
+          <p style="font-size:11px; color:var(--dim); margin:0 0 8px;">
+            Select your label component (or an instance of it) on the canvas, then click below.
           </p>
+          <button class="btn btn-primary" id="use-selection-label-btn" style="width:100%; padding:9px; font-size:12px; margin-bottom:8px;">Use selected component as label</button>
+
+          <!-- Current pick + text property. Hidden until a component is set. -->
+          <div id="label-component-detail" style="display:none;">
+            <div class="setting-row stacked" style="padding-top:0;">
+              <div><div class="setting-label">Current</div></div>
+              <div class="setting-control">
+                <select id="label-component-select" style="width:100%; text-overflow:ellipsis;"></select>
+              </div>
+            </div>
+            <div class="setting-row stacked" style="border-bottom:none;">
+              <div>
+                <div class="setting-label">Text property</div>
+                <div class="setting-sub">Which text receives the breakpoint name.</div>
+              </div>
+              <div class="setting-control">
+                <select id="label-textprop-select" style="width:100%; text-overflow:ellipsis;"></select>
+              </div>
+            </div>
+          </div>
+          <p id="label-component-hint" style="font-size:11px; color:var(--dim); margin:8px 0 2px;"></p>
         </div>
       </div>
 
@@ -916,11 +916,6 @@ window.onmessage = (event) => {
       renderSettingsBpList();
       renderSettings(); // refresh var-hint + library picker list
       refreshOpenPopups();
-      break;
-
-    case 'components':
-      state.componentOptions = msg.componentOptions || [];
-      renderLabelComponentPicker();
       break;
 
     case 'source-collections': {
@@ -2208,17 +2203,18 @@ function renderLabelComponentPicker() {
       })).join('');
   }
 
-  // Hint line: warn when a saved library component isn't resolvable here.
+  // Show the "Current / Text property" detail only once a component is set.
+  const detail = document.getElementById('label-component-detail');
+  if (detail) detail.style.display = currentVal ? 'block' : 'none';
+
   const hint = document.getElementById('label-component-hint');
   if (hint) {
-    if (!haveCurrent && currentVal) {
-      hint.textContent = '⚠ Saved component not found in this file. Use it somewhere here, then Refresh — or pick another.';
-      hint.style.color = 'var(--red)';
-    } else if (currentVal) {
-      hint.textContent = 'The breakpoint name is written into the chosen text property, or — when there’s no exposed property — into the first text layer inside the component.';
+    if (currentVal) {
+      const nm = state.settings.labelComponentName || 'component';
+      hint.textContent = `Using “${nm}”. The breakpoint name fills the chosen text property, or the first text layer if there’s none.`;
       hint.style.color = 'var(--dim)';
     } else {
-      hint.textContent = 'Select your label component (or an instance of it) on the canvas, then click “Use selected component”. The dropdown only lists components already used in this file.';
+      hint.textContent = 'No component set — plain text labels will be used.';
       hint.style.color = 'var(--dim)';
     }
   }
@@ -2442,15 +2438,6 @@ document.getElementById('detect-collection-btn').addEventListener('click', (e) =
   btn.disabled = true;
   btn.textContent = 'Scanning…';
   send({ type: 'detect-source-collections' });
-});
-
-document.getElementById('refresh-components-btn').addEventListener('click', (e) => {
-  const btn = e.currentTarget;
-  btn.disabled = true;
-  btn.textContent = 'Loading…';
-  send({ type: 'refresh-components' });
-  // Re-enable shortly; the 'components' message re-renders the picker.
-  setTimeout(() => { btn.disabled = false; btn.textContent = 'Refresh'; }, 1200);
 });
 
 // Save current breakpoints as the user's personal baseline
