@@ -118,6 +118,20 @@
       margin-bottom: 8px; padding-bottom: 6px;
       border-bottom: 1px solid var(--border2);
     }
+    /* Section header with a one-line description, used to give each settings
+       group a clear purpose. The label sits flush, the description below it. */
+    .section-head { margin: 18px 0 8px; }
+    .section-head:first-child { margin-top: 0; }
+    .section-head .section-label { margin-bottom: 4px; }
+    .section-desc { font-size: 11px; color: var(--dim); line-height: 1.4; margin: 0 0 10px; }
+    .settings-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 2px 12px; margin-bottom: 6px;
+    }
+    .subgroup-label {
+      font-size: 11px; font-weight: 600; color: var(--text);
+      margin: 0 0 2px;
+    }
 
     /* ── Breakpoint rows ── */
     .bp-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 18px; }
@@ -557,39 +571,29 @@
       <div id="settings-bp-list"></div>
       <button class="btn-add" id="add-bp-btn">+ Add breakpoint</button>
 
-      <!-- Layout settings -->
-      <div class="section-label">Layout</div>
-      <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 2px 12px;">
-        <div class="setting-row">
+      <!-- ── OUTPUT: what each Generate run produces ── -->
+      <div class="section-head">
+        <div class="section-label">Output</div>
+        <p class="section-desc">What each Generate run places on the canvas.</p>
+      </div>
+      <div class="settings-card">
+        <div class="setting-row" style="border-bottom:none;">
           <div>
             <div class="setting-label">Gap between frames</div>
+            <div class="setting-sub">Horizontal spacing between breakpoints, in px.</div>
           </div>
           <div class="setting-control">
             <input type="number" id="gap-input" class="gap-input" value="120" min="0" max="1000" step="8" />
           </div>
         </div>
-        <div class="setting-row">
-          <div>
-            <div class="setting-label">Remove min/max width</div>
-            <div class="setting-sub">Strip width constraints from clones so they resize freely. Turn off to keep component constraints.</div>
-          </div>
-          <div class="setting-control">
-            <input type="checkbox" id="clear-constraints-toggle" />
-          </div>
-        </div>
-        <div class="setting-row">
-          <div>
-            <div class="setting-label">Update on selection change</div>
-            <div class="setting-sub">Detect variants automatically as you click around. Turn off if Figma feels laggy — use the Refresh button to capture a new selection manually.</div>
-          </div>
-          <div class="setting-control">
-            <input type="checkbox" id="live-updates-toggle" checked />
-          </div>
-        </div>
-        <div class="setting-row" style="border-bottom:none;">
+      </div>
+
+      <!-- Labels -->
+      <div class="settings-card">
+        <div class="setting-row" id="labels-row" style="border-bottom:none;">
           <div>
             <div class="setting-label">Add labels above frames</div>
-            <div class="setting-sub">Breakpoint name, or a component you choose</div>
+            <div class="setting-sub">A breakpoint name above each frame — plain text, or a component you choose.</div>
           </div>
           <div class="setting-control">
             <input type="checkbox" id="labels-toggle" checked />
@@ -598,19 +602,19 @@
 
         <!-- Expandable: only relevant when labels are on -->
         <div id="label-options" style="display:none; border-top:1px solid var(--border2); padding:10px 0 4px;">
-          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-            <div class="setting-label">Label component</div>
-            <button class="btn-ghost" id="refresh-components-btn" style="padding:4px 8px; font-size:10px;">Refresh</button>
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+            <div class="subgroup-label">Label component</div>
+            <button class="btn-ghost" id="refresh-components-btn" style="padding:4px 8px; font-size:10px;">Refresh list</button>
           </div>
           <div class="setting-row stacked" style="padding-top:0;">
             <div>
-              <div class="setting-sub" style="margin-top:0;">Used above each breakpoint instead of the plain text label. Leave as “Text label” to keep the default.</div>
+              <div class="setting-sub" style="margin-top:0;">Used instead of the plain text label. Leave as “Text label” to keep the default.</div>
             </div>
             <div class="setting-control">
               <select id="label-component-select" style="width:100%; text-overflow:ellipsis;"></select>
             </div>
           </div>
-          <div class="setting-row stacked" style="border-bottom:none;">
+          <div class="setting-row stacked">
             <div>
               <div class="setting-label">Text property</div>
               <div class="setting-sub">Which text receives the breakpoint name.</div>
@@ -619,101 +623,126 @@
               <select id="label-textprop-select" style="width:100%; text-overflow:ellipsis;"></select>
             </div>
           </div>
-          <button class="btn btn-ghost" id="use-selection-label-btn" style="width:100%; margin:6px 0;">Use selected component as label</button>
-          <p id="label-component-hint" style="font-size:11px; color:var(--dim); margin-bottom:2px;">
-            Select your label component (or an instance of it) on the canvas, then click “Use selected component” — this is the reliable way to pick a library component. The dropdown only lists components already used in this file.
+          <button class="btn btn-ghost" id="use-selection-label-btn" style="width:100%; margin:6px 0 0;">Use selected component as label</button>
+          <p id="label-component-hint" style="font-size:11px; color:var(--dim); margin:8px 0 2px;">
+            Select your label component (or an instance of it) on the canvas, then click “Use selected component” — the reliable way to pick a library component.
           </p>
         </div>
       </div>
 
-      <hr />
-
-      <!-- Appearance sections (light / dark) -->
-      <div class="section-label">Light / dark sections</div>
-      <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 2px 12px; margin-bottom:6px;">
+      <!-- Light & dark sections -->
+      <div class="settings-card">
         <div class="setting-row stacked">
           <div>
-            <div class="setting-label">Appearance collection</div>
-            <div class="setting-sub">Pick the variable collection that holds your light/dark modes. Leave as “None” to skip sections.</div>
+            <div class="setting-label">Light &amp; dark sections</div>
+            <div class="setting-sub">Wrap the output in two Sections (light + dark, stacked). Leave as “None” to skip.</div>
           </div>
           <div class="setting-control">
             <select id="appearance-collection-select" style="width:100%; text-overflow:ellipsis;"></select>
           </div>
         </div>
-        <div class="setting-row" style="padding-top:0;">
+        <div class="setting-row" style="padding-top:0; border-bottom:none;">
           <button class="btn btn-ghost" id="detect-collection-btn" style="width:100%;">Detect from selected frame</button>
         </div>
-        <div class="setting-row stacked">
-          <div>
-            <div class="setting-label">Light mode</div>
+
+        <!-- Expandable: light/dark mode pickers, shown once a collection is chosen -->
+        <div id="appearance-options" style="display:none; border-top:1px solid var(--border2); padding:10px 0 4px;">
+          <div class="setting-row stacked" style="padding-top:0;">
+            <div><div class="setting-label">Light mode</div></div>
+            <div class="setting-control">
+              <select id="appearance-light-select" style="width:100%; text-overflow:ellipsis;"></select>
+            </div>
           </div>
-          <div class="setting-control">
-            <select id="appearance-light-select" style="width:100%; text-overflow:ellipsis;"></select>
+          <div class="setting-row stacked" style="border-bottom:none;">
+            <div><div class="setting-label">Dark mode</div></div>
+            <div class="setting-control">
+              <select id="appearance-dark-select" style="width:100%; text-overflow:ellipsis;"></select>
+            </div>
           </div>
+          <p id="appearance-hint" style="font-size:11px; color:var(--dim); margin:8px 0 2px;">
+            Generate will produce two Sections — one light, one dark.
+          </p>
         </div>
-        <div class="setting-row stacked" style="border-bottom:none;">
+      </div>
+
+      <!-- ── FRAMES: how clones resize ── -->
+      <div class="section-head">
+        <div class="section-label">Frame sizing</div>
+        <p class="section-desc">How each cloned frame adapts to its breakpoint width.</p>
+      </div>
+      <div class="settings-card">
+        <div class="setting-row" style="border-bottom:none;">
           <div>
-            <div class="setting-label">Dark mode</div>
+            <div class="setting-label">Remove min/max width</div>
+            <div class="setting-sub">Strip width constraints so clones resize freely. Off keeps the component’s own constraints.</div>
           </div>
           <div class="setting-control">
-            <select id="appearance-dark-select" style="width:100%; text-overflow:ellipsis;"></select>
+            <input type="checkbox" id="clear-constraints-toggle" />
           </div>
         </div>
       </div>
-      <p id="appearance-hint" style="font-size:11px; color:var(--dim); margin-bottom:14px;">
-        When set, Generate produces two Sections side-by-side — one with the light mode applied, one with the dark mode.
-      </p>
 
-      <hr />
-
-      <!-- Defaults -->
-      <div class="section-label">Defaults</div>
-      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-bottom:6px;">
-        <button class="btn btn-ghost" id="save-defaults-btn">Save current as defaults</button>
-        <button class="btn btn-ghost" id="load-defaults-btn">Load my defaults</button>
+      <!-- ── TOKENS: where width values come from ── -->
+      <div class="section-head">
+        <div class="section-label">Tokens &amp; variables</div>
+        <p class="section-desc">Sources for the WIDTH variables shown in the breakpoint pickers.</p>
       </div>
-      <p id="defaults-hint" style="font-size:11px; color:var(--dim); margin-bottom:14px;">
-        Your defaults are used when you reset, and can be loaded into any file.
-      </p>
-
-      <hr />
-
-      <!-- Token library preference -->
-      <div class="section-label">Token library</div>
-      <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 2px 12px; margin-bottom:8px;">
+      <div class="settings-card">
         <div class="setting-row stacked">
           <div>
             <div class="setting-label">Preferred library</div>
-            <div class="setting-sub">Pinned to the top of the picker</div>
+            <div class="setting-sub">Pinned to the top of the picker.</div>
           </div>
           <div class="setting-control">
             <select id="preferred-library" style="width:100%; text-overflow:ellipsis;"></select>
           </div>
         </div>
-        <div class="setting-row">
+        <div class="setting-row" style="border-bottom:none;">
           <div>
             <div class="setting-label">Only show this library</div>
-            <div class="setting-sub">Hide tokens from other libraries</div>
+            <div class="setting-sub">Hide tokens from other libraries.</div>
           </div>
           <div class="setting-control">
             <input type="checkbox" id="filter-to-library" />
           </div>
         </div>
       </div>
-
-      <hr />
-
-      <!-- Variable options info -->
-      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-        <div class="section-label" style="margin-bottom:0; border:none; padding:0;">File variables</div>
+      <div style="display:flex; align-items:center; justify-content:space-between; margin:6px 0 4px;">
+        <span id="var-hint" style="font-size:11px; color:var(--dim);">
+          Variables loaded from this file and linked libraries.
+        </span>
         <button class="btn-ghost" id="refresh-vars-btn" style="padding:4px 8px; font-size:10px;">Refresh</button>
       </div>
-      <p id="var-hint" style="font-size:11px; color:var(--dim); margin-bottom:14px;">
-        WIDTH-scoped variables from this file and linked libraries appear in the breakpoint dropdowns above.
+
+      <!-- ── PERFORMANCE ── -->
+      <div class="section-head">
+        <div class="section-label">Performance</div>
+        <p class="section-desc">Tune how hard the plugin works as you click around.</p>
+      </div>
+      <div class="settings-card">
+        <div class="setting-row" style="border-bottom:none;">
+          <div>
+            <div class="setting-label">Update on selection change</div>
+            <div class="setting-sub">Detect variants automatically as you select frames. Turn off on large files — use Refresh on the Generate tab to capture a selection manually.</div>
+          </div>
+          <div class="setting-control">
+            <input type="checkbox" id="live-updates-toggle" checked />
+          </div>
+        </div>
+      </div>
+
+      <!-- ── DEFAULTS & RESET ── -->
+      <div class="section-head">
+        <div class="section-label">Defaults &amp; reset</div>
+        <p class="section-desc">Save your breakpoint setup to reuse across files.</p>
+      </div>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-bottom:6px;">
+        <button class="btn btn-ghost" id="save-defaults-btn">Save current as defaults</button>
+        <button class="btn btn-ghost" id="load-defaults-btn">Load my defaults</button>
+      </div>
+      <p id="defaults-hint" style="font-size:11px; color:var(--dim); margin-bottom:10px;">
+        Your defaults are used when you reset, and can be loaded into any file.
       </p>
-
-      <hr />
-
       <button class="btn btn-ghost" id="reset-btn" style="width:100%; color:var(--red); border-color:rgba(224,82,82,0.3);">
         Reset to defaults
       </button>
@@ -2070,6 +2099,10 @@ function renderAppearancePicker() {
   };
   fillModes(lightSelect, s.lightModeId || '');
   fillModes(darkSelect, s.darkModeId || '');
+
+  // Reveal the light/dark mode pickers only once a collection is chosen.
+  const opts = document.getElementById('appearance-options');
+  if (opts) opts.style.display = chosen ? 'block' : 'none';
 
   const hint = document.getElementById('appearance-hint');
   if (hint) {
