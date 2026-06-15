@@ -643,8 +643,8 @@
       <div class="settings-card">
         <div class="setting-row stacked">
           <div>
-            <div class="setting-label">Light &amp; dark sections</div>
-            <div class="setting-sub">Wrap the output in two Sections (light + dark, stacked). Leave as “None” to skip.</div>
+            <div class="setting-label">Light &amp; dark frames</div>
+            <div class="setting-sub">Wrap the output in two auto-layout frames (light + dark, stacked). Leave as “None” to skip.</div>
           </div>
           <div class="setting-control">
             <select id="appearance-collection-select" style="width:100%; text-overflow:ellipsis;"></select>
@@ -670,15 +670,15 @@
           </div>
           <div class="setting-row stacked" style="border-bottom:none;">
             <div>
-              <div class="setting-label">Section background</div>
-              <div class="setting-sub">Default grey, transparent, or a colour variable (flips with the mode).</div>
+              <div class="setting-label">Frame background</div>
+              <div class="setting-sub">Transparent, or a colour variable (flips with the mode).</div>
             </div>
             <div class="setting-control">
               <select id="section-bg-select" style="width:100%; text-overflow:ellipsis;"></select>
             </div>
           </div>
           <p id="appearance-hint" style="font-size:11px; color:var(--dim); margin:8px 0 2px;">
-            Generate will produce two Sections — one light, one dark.
+            Generate will produce two auto-layout frames — one light, one dark.
           </p>
         </div>
       </div>
@@ -783,7 +783,8 @@ let state = {
   variableOptions: [],
   modeOptions: [],           // Every (collection, mode) pair from collections with >1 mode
   componentOptions: [],      // Components the user can pick as the label component
-  colorOptions: [],          // COLOR variables, for the section background picker
+  colorOptions: [],          // COLOR variables, for the frame background picker (loaded lazily)
+  colorsRequested: false,    // True once we've asked the sandbox to enumerate colours
   sourceCollections: [],     // Multi-mode collections detected from the selected frame's bound variables
   defaultBreakpoints: null,  // User-saved baseline (null until they save one)
   preferredLibrary: null,    // Library name to pin to top of the dropdown
@@ -932,11 +933,15 @@ window.onmessage = (event) => {
     case 'variables':
       state.variableOptions = msg.variableOptions || [];
       state.modeOptions = msg.modeOptions || [];
-      if (msg.colorOptions) state.colorOptions = msg.colorOptions;
       state.loadingTokens = false;
       renderSettingsBpList();
       renderSettings(); // refresh var-hint + library picker list
       refreshOpenPopups();
+      break;
+
+    case 'colors':
+      state.colorOptions = msg.colorOptions || [];
+      renderSectionBgPicker();
       break;
 
     case 'source-collections': {
@@ -2092,7 +2097,7 @@ function renderAppearancePicker() {
   }
   const curCol = chosen ? chosen.collectionId : '';
 
-  colSelect.innerHTML = ['<option value="">None — don’t create sections</option>']
+  colSelect.innerHTML = ['<option value="">None — don’t create frames</option>']
     .concat(cols.map(c => {
       // Tag each collection with its source (library name / Local) plus mode
       // count so "Collection 1" type defaults are distinguishable. Collections
@@ -2123,16 +2128,23 @@ function renderAppearancePicker() {
   const opts = document.getElementById('appearance-options');
   if (opts) opts.style.display = chosen ? 'block' : 'none';
 
+  // Lazily load colour variables the first time the frame options are shown —
+  // enumerating them is expensive, so we defer it off plugin-open.
+  if (chosen && !state.colorsRequested) {
+    state.colorsRequested = true;
+    send({ type: 'load-colors' });
+  }
+
   const hint = document.getElementById('appearance-hint');
   if (hint) {
     if (chosen && s.lightModeId && s.darkModeId) {
-      hint.textContent = 'Generate will produce two Sections side-by-side — one light, one dark.';
+      hint.textContent = 'Generate will produce two auto-layout frames stacked — one light, one dark.';
       hint.style.color = 'var(--dim)';
     } else if (chosen) {
-      hint.textContent = 'Pick both a light and a dark mode to enable section output.';
+      hint.textContent = 'Pick both a light and a dark mode to enable frame output.';
       hint.style.color = 'var(--dim)';
     } else {
-      hint.textContent = 'When set, Generate produces two Sections side-by-side — one with the light mode applied, one with the dark mode.';
+      hint.textContent = 'When set, Generate produces two stacked auto-layout frames — one light, one dark.';
       hint.style.color = 'var(--dim)';
     }
   }
@@ -2143,18 +2155,20 @@ function colorOptionValue(c) {
   return 'v:' + (c.id || c.key);
 }
 
-// Populate the section-background <select>: Default / Transparent / colour vars.
+// Populate the frame-background <select>: Transparent / colour vars. (Frames
+// have no useful grey default, so 'default' collapses to transparent.)
 function renderSectionBgPicker() {
   const sel = document.getElementById('section-bg-select');
   if (!sel) return;
   const s = state.settings;
   const cur = s.sectionBgMode === 'variable'
     ? ('v:' + (s.sectionBgVariableId || s.sectionBgVariableKey || ''))
-    : (s.sectionBgMode || 'default');
+    : 'transparent';
 
-  const opts = ['<option value="default">Default (grey)</option>',
-                '<option value="transparent">Transparent</option>'];
-  let haveCur = (cur === 'default' || cur === 'transparent');
+  const opts = ['<option value="transparent">Transparent</option>'];
+  let haveCur = (cur === 'transparent');
+  const loading = !state.colorOptions.length && state.colorsRequested;
+  if (loading) opts.push('<option value="" disabled>Loading colours…</option>');
   for (const c of (state.colorOptions || [])) {
     const val = colorOptionValue(c);
     if (val === cur) haveCur = true;

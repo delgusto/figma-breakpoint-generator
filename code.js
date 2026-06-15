@@ -94,10 +94,12 @@ async function init() {
   // Read all FLOAT variables + multi-mode collections — both can be used as breakpoint links.
   // The label component is captured from the canvas selection (no document-wide
   // component scan), so there's nothing component-related to load here.
-  const [variableOptions, modeOptions, colorOptions] = await Promise.all([
+  // Colour variables are loaded lazily (on-demand 'load-colors') the first time
+  // the user opens the light/dark frame options — enumerating them is a third
+  // pass over every library variable and was slowing plugin open.
+  const [variableOptions, modeOptions] = await Promise.all([
     getFloatVariables(),
     getVariableCollectionModes(),
-    getColorVariables(),
   ]);
 
   figma.ui.postMessage({
@@ -106,7 +108,6 @@ async function init() {
     settings,
     variableOptions,
     modeOptions,
-    colorOptions,
     componentOptions: [],
     defaultBreakpoints: defaultBreakpoints || null,
     preferredLibrary: preferredLibrary || null,
@@ -831,13 +832,12 @@ figma.ui.onmessage = async (msg) => {
       ]);
       // Library prefs + user defaults survive a reset. Component enumeration is
       // on-demand (not run here) to keep large files responsive.
-      const [defaultBreakpoints, preferredLibrary, filterToLibrary, variableOptions, modeOptions, colorOptions] = await Promise.all([
+      const [defaultBreakpoints, preferredLibrary, filterToLibrary, variableOptions, modeOptions] = await Promise.all([
         figma.clientStorage.getAsync('defaultBreakpoints'),
         figma.clientStorage.getAsync('preferredLibrary'),
         figma.clientStorage.getAsync('filterToLibrary'),
         getFloatVariables(),
         getVariableCollectionModes(),
-        getColorVariables(),
       ]);
       figma.ui.postMessage({
         type: 'init',
@@ -846,7 +846,6 @@ figma.ui.onmessage = async (msg) => {
         settings: DEFAULT_SETTINGS,
         variableOptions,
         modeOptions,
-        colorOptions,
         componentOptions: [],
         defaultBreakpoints: defaultBreakpoints || null,
         preferredLibrary: preferredLibrary || null,
@@ -867,12 +866,18 @@ figma.ui.onmessage = async (msg) => {
       break;
 
     case 'refresh-variables': {
-      const [variableOptions, modeOptions, colorOptions] = await Promise.all([
+      const [variableOptions, modeOptions] = await Promise.all([
         getFloatVariables(),
         getVariableCollectionModes(),
-        getColorVariables(),
       ]);
-      figma.ui.postMessage({ type: 'variables', variableOptions, modeOptions, colorOptions });
+      figma.ui.postMessage({ type: 'variables', variableOptions, modeOptions });
+      break;
+    }
+
+    case 'load-colors': {
+      // On-demand colour-variable enumeration for the frame background picker.
+      const colorOptions = await getColorVariables();
+      figma.ui.postMessage({ type: 'colors', colorOptions });
       break;
     }
 
@@ -947,6 +952,12 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
 
   const parent = source.parent;
   const baseY = source.y;
+
+  // Wrapping the output in light/dark frames uses a horizontal auto-layout, so
+  // each breakpoint must be ONE node. Force per-breakpoint grouping when frames
+  // are configured (and labels are on) so the layout stays clean.
+  const wrapInFrames = appearanceConfigured(settings);
+  const doGroup = settings.groupWithLabel !== false || wrapInFrames;
 
   // Clones are generated in the order the user has arranged them in the Settings
   // list — no auto-sort by width. Each clone is placed immediately to the right
@@ -1029,7 +1040,7 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
       }
     }
 
-    if (settings.addLabels && settings.groupWithLabel && labelNode) {
+    if (settings.addLabels && doGroup && labelNode) {
       // Vertical auto-layout group: label on top, frame below.
       const group = figma.createFrame();
       group.name = `${source.name} / ${bp.label}`;
@@ -1061,11 +1072,11 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
     }
   }
 
-  // Optionally wrap everything in light + dark Sections.
-  if (appearanceConfigured(settings)) {
-    const sections = await wrapInLightDarkSections(generated, source, settings, GAP);
-    if (sections && sections.light) {
-      const sel = sections.dark ? [sections.light, sections.dark] : [sections.light];
+  // Optionally wrap everything in light + dark auto-layout frames.
+  if (wrapInFrames) {
+    const frames = await wrapInLightDarkFrames(generated, source, settings, GAP);
+    if (frames && frames.light) {
+      const sel = frames.dark ? [frames.light, frames.dark] : [frames.light];
       figma.currentPage.selection = sel;
       figma.viewport.scrollAndZoomIntoView(sel);
       return resolved.length;
@@ -1087,24 +1098,12 @@ function appearanceConfigured(settings) {
     (settings.appearanceCollectionId || settings.appearanceCollectionKey));
 }
 
-// Move a node to an absolute page position regardless of its parent's
-// coordinate model. Sets x/y, measures the resulting absolute origin, and
-// corrects for any offset — so it works whether SectionNode children are
-// page-absolute or section-relative (which differs by Figma version).
-function setAbsPos(node, x, y) {
-  try {
-    node.x = x; node.y = y;
-    const t = node.absoluteTransform;
-    const ex = x - t[0][2];
-    const ey = y - t[1][2];
-    if (ex || ey) { node.x = x + ex; node.y = y + ey; }
-  } catch (err) {}
-}
-
-// Wrap the generated nodes in a "— Light" Section with the light appearance
-// mode applied, then clone it into a sibling "— Dark" Section with the dark
-// mode applied. Returns { light, dark } or null when not configured / failed.
-async function wrapInLightDarkSections(generated, source, settings, GAP) {
+// Wrap the generated per-breakpoint nodes in a "— Light" horizontal auto-layout
+// frame with the light appearance mode applied, then clone it into a "— Dark"
+// frame below with the dark mode. Auto-layout positions the children, so there
+// is no manual coordinate maths (unlike Sections). Returns { light, dark } or
+// null when not configured / failed.
+async function wrapInLightDarkFrames(generated, source, settings, GAP) {
   if (!generated.length) return null;
   const collection = await resolveCollectionByKeyOrId(
     settings.appearanceCollectionId, settings.appearanceCollectionKey);
@@ -1113,40 +1112,28 @@ async function wrapInLightDarkSections(generated, source, settings, GAP) {
   const page = figma.currentPage;
   const PAD = 80;
 
-  // Capture each node's true page position BEFORE re-parenting — these are the
-  // coordinates we want the content to keep, independent of section quirks.
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  const targets = [];
-  for (const n of generated) {
-    const t = n.absoluteTransform;
-    const x = t[0][2], y = t[1][2];
-    targets.push({ node: n, x: x, y: y });
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x + n.width);
-    maxY = Math.max(maxY, y + n.height);
-  }
-  if (!isFinite(minX)) return null;
+  // Anchor the light frame just below the source (absolute page coords).
+  const st = source.absoluteTransform;
+  const anchorX = st[0][2];
+  const anchorY = st[1][2] + source.height + GAP * 2;
 
-  const w = (maxX - minX) + PAD * 2;
-  const h = (maxY - minY) + PAD * 2;
-
-  const light = figma.createSection();
+  const light = figma.createFrame();
   light.name = `${source.name} — Light`;
+  light.layoutMode = 'HORIZONTAL';
+  light.primaryAxisSizingMode = 'AUTO';
+  light.counterAxisSizingMode = 'AUTO';
+  light.counterAxisAlignItems = 'MIN'; // top-align the breakpoint columns
+  light.itemSpacing = GAP;
+  light.paddingLeft = light.paddingRight = light.paddingTop = light.paddingBottom = PAD;
+  light.clipsContent = false;
   page.appendChild(light);
-  for (const t of targets) {
-    try { light.appendChild(t.node); } catch (err) {}
-  }
+  light.x = anchorX;
+  light.y = anchorY;
 
-  // Position + size the section, then pin every child back to its captured
-  // page position (model-agnostic). Section first, children after — so any
-  // drift from moving the section is corrected.
-  setAbsPos(light, minX - PAD, minY - PAD);
-  try {
-    if (light.resizeWithoutConstraints) light.resizeWithoutConstraints(w, h);
-    else light.resize(w, h);
-  } catch (err) {}
-  for (const t of targets) setAbsPos(t.node, t.x, t.y);
+  // Auto-layout arranges the children left-to-right; no per-child positioning.
+  for (const n of generated) {
+    try { light.appendChild(n); } catch (err) {}
+  }
 
   try {
     if (light.setExplicitVariableModeForCollection) {
@@ -1154,24 +1141,18 @@ async function wrapInLightDarkSections(generated, source, settings, GAP) {
     }
   } catch (err) {}
 
-  // Apply the chosen background BEFORE cloning so the dark section inherits it.
-  // A bound colour variable resolves per the section's mode, so the dark clone
+  // Apply the chosen background BEFORE cloning so the dark frame inherits it.
+  // A bound colour variable resolves per the frame's mode, so the dark clone
   // automatically shows the dark surface value.
-  await applySectionBackground(light, settings);
+  await applyFrameBackground(light, settings);
 
-  // Dark clone, stacked below the light section by its height + gap. Pin its
-  // children to the light targets plus the same vertical offset, so it doesn't
-  // matter whether the section move dragged them or not.
+  // Dark clone, stacked directly below the light frame.
   let dark = null;
   try {
     dark = light.clone();
     dark.name = `${source.name} — Dark`;
-    const offsetY = h + GAP;
-    setAbsPos(dark, minX - PAD, (minY - PAD) + offsetY);
-    const dchildren = dark.children;
-    for (let i = 0; i < dchildren.length && i < targets.length; i++) {
-      setAbsPos(dchildren[i], targets[i].x, targets[i].y + offsetY);
-    }
+    dark.x = light.x;
+    dark.y = light.y + light.height + GAP;
     if (dark.setExplicitVariableModeForCollection) {
       dark.setExplicitVariableModeForCollection(collection, settings.darkModeId);
     }
@@ -1180,15 +1161,11 @@ async function wrapInLightDarkSections(generated, source, settings, GAP) {
   return { light: light, dark: dark };
 }
 
-// Apply the configured background to a section: clear it (transparent), leave
-// it (default Figma grey), or bind a COLOR variable (flips with the mode).
-async function applySectionBackground(section, settings) {
+// Apply the configured background to a wrapper frame: transparent (no fill) or
+// a bound COLOR variable (flips with the mode). 'default' is treated as
+// transparent for frames (a frame's own white fill would not flip with mode).
+async function applyFrameBackground(frame, settings) {
   const mode = settings.sectionBgMode || 'default';
-  if (mode === 'default') return;
-  if (mode === 'transparent') {
-    try { section.fills = []; } catch (err) {}
-    return;
-  }
   if (mode === 'variable') {
     try {
       let variable = null;
@@ -1198,12 +1175,16 @@ async function applySectionBackground(section, settings) {
       if (!variable && settings.sectionBgVariableKey) {
         try { variable = await figma.variables.importVariableByKeyAsync(settings.sectionBgVariableKey); } catch (err) {}
       }
-      if (!variable) return;
-      const paint = { type: 'SOLID', color: { r: 0, g: 0, b: 0 }, opacity: 1 };
-      const bound = figma.variables.setBoundVariableForPaint(paint, 'color', variable);
-      section.fills = [bound];
+      if (variable) {
+        const paint = { type: 'SOLID', color: { r: 0, g: 0, b: 0 }, opacity: 1 };
+        const bound = figma.variables.setBoundVariableForPaint(paint, 'color', variable);
+        frame.fills = [bound];
+        return;
+      }
     } catch (err) {}
   }
+  // default + transparent → no fill.
+  try { frame.fills = []; } catch (err) {}
 }
 
 // ─── Variant helper ───────────────────────────────────────────────────────────
