@@ -59,6 +59,14 @@ const DEFAULT_SETTINGS = {
   lightModeName: null,
   darkModeId: null,
   darkModeName: null,
+  // Section background — 'default' keeps Figma's grey, 'transparent' clears the
+  // fill, 'variable' binds a COLOR variable so it flips with the section's mode.
+  sectionBgMode: 'default',
+  sectionBgVariableId: null,
+  sectionBgVariableKey: null,
+  sectionBgVariableName: null,
+  // Group each frame with its label in a vertical auto-layout frame.
+  groupWithLabel: true,
 };
 
 // Mirrors settings.liveUpdates so the sandbox can short-circuit the debounce
@@ -86,9 +94,10 @@ async function init() {
   // Read all FLOAT variables + multi-mode collections — both can be used as breakpoint links.
   // The label component is captured from the canvas selection (no document-wide
   // component scan), so there's nothing component-related to load here.
-  const [variableOptions, modeOptions] = await Promise.all([
+  const [variableOptions, modeOptions, colorOptions] = await Promise.all([
     getFloatVariables(),
     getVariableCollectionModes(),
+    getColorVariables(),
   ]);
 
   figma.ui.postMessage({
@@ -97,6 +106,7 @@ async function init() {
     settings,
     variableOptions,
     modeOptions,
+    colorOptions,
     componentOptions: [],
     defaultBreakpoints: defaultBreakpoints || null,
     preferredLibrary: preferredLibrary || null,
@@ -193,6 +203,52 @@ async function getFloatVariables() {
     // teamLibrary unavailable or no libraries connected
   }
 
+  return result;
+}
+
+// Enumerate COLOR variables (local + linked libraries) for the section
+// background picker. We don't resolve values — just name/id/key for display
+// and binding. Library vars are listed by key (no import needed until used).
+async function getColorVariables() {
+  const result = [];
+  const importedKeys = new Set();
+
+  try {
+    const localVars = await figma.variables.getLocalVariablesAsync();
+    const cols = await figma.variables.getLocalVariableCollectionsAsync();
+    for (const v of localVars) {
+      if (v.resolvedType !== 'COLOR') continue;
+      let colName = '';
+      for (const c of cols) { if (c.id === v.variableCollectionId) { colName = c.name; break; } }
+      if (v.key) importedKeys.add(v.key);
+      result.push({
+        id: v.id, key: v.key || null, name: v.name,
+        collection: colName, libraryName: 'Local', isLibrary: false,
+      });
+    }
+  } catch (err) {}
+
+  try {
+    const libCollections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+    for (const libCol of libCollections) {
+      try {
+        const libVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(libCol.key);
+        for (const lv of libVars) {
+          if (lv.resolvedType !== 'COLOR') continue;
+          if (importedKeys.has(lv.key)) continue;
+          result.push({
+            id: null, key: lv.key, name: lv.name,
+            collection: libCol.name, libraryName: libCol.libraryName || 'Library', isLibrary: true,
+          });
+        }
+      } catch (err) {}
+    }
+  } catch (err) {}
+
+  result.sort(function(a, b) {
+    if (a.libraryName !== b.libraryName) return a.libraryName === 'Local' ? -1 : (b.libraryName === 'Local' ? 1 : (a.libraryName < b.libraryName ? -1 : 1));
+    return String(a.name).localeCompare(String(b.name));
+  });
   return result;
 }
 
@@ -775,12 +831,13 @@ figma.ui.onmessage = async (msg) => {
       ]);
       // Library prefs + user defaults survive a reset. Component enumeration is
       // on-demand (not run here) to keep large files responsive.
-      const [defaultBreakpoints, preferredLibrary, filterToLibrary, variableOptions, modeOptions] = await Promise.all([
+      const [defaultBreakpoints, preferredLibrary, filterToLibrary, variableOptions, modeOptions, colorOptions] = await Promise.all([
         figma.clientStorage.getAsync('defaultBreakpoints'),
         figma.clientStorage.getAsync('preferredLibrary'),
         figma.clientStorage.getAsync('filterToLibrary'),
         getFloatVariables(),
         getVariableCollectionModes(),
+        getColorVariables(),
       ]);
       figma.ui.postMessage({
         type: 'init',
@@ -789,6 +846,7 @@ figma.ui.onmessage = async (msg) => {
         settings: DEFAULT_SETTINGS,
         variableOptions,
         modeOptions,
+        colorOptions,
         componentOptions: [],
         defaultBreakpoints: defaultBreakpoints || null,
         preferredLibrary: preferredLibrary || null,
@@ -809,11 +867,12 @@ figma.ui.onmessage = async (msg) => {
       break;
 
     case 'refresh-variables': {
-      const [variableOptions, modeOptions] = await Promise.all([
+      const [variableOptions, modeOptions, colorOptions] = await Promise.all([
         getFloatVariables(),
         getVariableCollectionModes(),
+        getColorVariables(),
       ]);
-      figma.ui.postMessage({ type: 'variables', variableOptions, modeOptions });
+      figma.ui.postMessage({ type: 'variables', variableOptions, modeOptions, colorOptions });
       break;
     }
 
@@ -862,7 +921,6 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
   if (enabled.length === 0) throw new Error('Enable at least one breakpoint.');
 
   const GAP = typeof settings.gap === 'number' ? settings.gap : 120;
-  const LABEL_ABOVE = 28; // px above the clone's top edge
 
   // Pre-load fonts once if labels are needed
   if (settings.addLabels) {
@@ -954,32 +1012,53 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
     const actualWidth = clone.width || bp.width;
     clone.x = cursor;
 
+    // Build a single label node (component instance, or a text chip).
+    let labelNode = null;
     if (settings.addLabels) {
-      let placedComponentLabel = false;
       if (labelMain) {
         try {
           const inst = labelMain.createInstance();
-          if (inst.parent !== parent) parent.appendChild(inst);
-          // Set the label text first (may reflow/resize the instance), then
-          // position it just above the clone's top edge.
+          parent.appendChild(inst);
           await setInstanceLabelText(inst, labelTextProp, bp.label);
-          inst.x = cursor;
-          inst.y = baseY - inst.height - 8;
-          generated.push(inst);
-          placedComponentLabel = true;
-        } catch (err) {
-          // fall through to the text label
-        }
+          labelNode = inst;
+        } catch (err) { labelNode = null; }
       }
-      if (!placedComponentLabel) {
-        const label = makeLabel(bp.label, Math.round(actualWidth), cursor, baseY - LABEL_ABOVE);
-        generated.push(...label);
+      if (!labelNode) {
+        labelNode = makeLabelChip(bp.label, Math.round(actualWidth));
+        parent.appendChild(labelNode);
       }
     }
 
-    generated.push(clone);
-    cloneNodes.push(clone);
-    cursor += actualWidth + GAP;
+    if (settings.addLabels && settings.groupWithLabel && labelNode) {
+      // Vertical auto-layout group: label on top, frame below.
+      const group = figma.createFrame();
+      group.name = `${source.name} / ${bp.label}`;
+      group.layoutMode = 'VERTICAL';
+      group.primaryAxisSizingMode = 'AUTO';
+      group.counterAxisSizingMode = 'AUTO';
+      group.counterAxisAlignItems = 'MIN';
+      group.itemSpacing = 8;
+      group.fills = [];
+      group.clipsContent = false;
+      parent.appendChild(group);
+      group.appendChild(labelNode);
+      group.appendChild(clone);
+      // Keep the frame itself at baseY (group top sits above it by label height).
+      group.x = cursor;
+      group.y = baseY - (group.height - clone.height);
+      generated.push(group);
+      cloneNodes.push(group);
+      cursor += group.width + GAP;
+    } else {
+      if (labelNode) {
+        labelNode.x = cursor;
+        labelNode.y = baseY - labelNode.height - 8;
+        generated.push(labelNode);
+      }
+      generated.push(clone);
+      cloneNodes.push(clone);
+      cursor += actualWidth + GAP;
+    }
   }
 
   // Optionally wrap everything in light + dark Sections.
@@ -1075,6 +1154,11 @@ async function wrapInLightDarkSections(generated, source, settings, GAP) {
     }
   } catch (err) {}
 
+  // Apply the chosen background BEFORE cloning so the dark section inherits it.
+  // A bound colour variable resolves per the section's mode, so the dark clone
+  // automatically shows the dark surface value.
+  await applySectionBackground(light, settings);
+
   // Dark clone, stacked below the light section by its height + gap. Pin its
   // children to the light targets plus the same vertical offset, so it doesn't
   // matter whether the section move dragged them or not.
@@ -1094,6 +1178,32 @@ async function wrapInLightDarkSections(generated, source, settings, GAP) {
   } catch (err) {}
 
   return { light: light, dark: dark };
+}
+
+// Apply the configured background to a section: clear it (transparent), leave
+// it (default Figma grey), or bind a COLOR variable (flips with the mode).
+async function applySectionBackground(section, settings) {
+  const mode = settings.sectionBgMode || 'default';
+  if (mode === 'default') return;
+  if (mode === 'transparent') {
+    try { section.fills = []; } catch (err) {}
+    return;
+  }
+  if (mode === 'variable') {
+    try {
+      let variable = null;
+      if (settings.sectionBgVariableId) {
+        try { variable = await figma.variables.getVariableByIdAsync(settings.sectionBgVariableId); } catch (err) {}
+      }
+      if (!variable && settings.sectionBgVariableKey) {
+        try { variable = await figma.variables.importVariableByKeyAsync(settings.sectionBgVariableKey); } catch (err) {}
+      }
+      if (!variable) return;
+      const paint = { type: 'SOLID', color: { r: 0, g: 0, b: 0 }, opacity: 1 };
+      const bound = figma.variables.setBoundVariableForPaint(paint, 'color', variable);
+      section.fills = [bound];
+    } catch (err) {}
+  }
 }
 
 // ─── Variant helper ───────────────────────────────────────────────────────────
@@ -1199,22 +1309,32 @@ async function resolveCollection(bp) {
 
 // ─── Label helper ─────────────────────────────────────────────────────────────
 
-function makeLabel(name, width, x, y) {
+// A single label node: a horizontal auto-layout chip holding the breakpoint
+// name and its width. One node (vs two loose text nodes) so it can be dropped
+// into an auto-layout group with its frame.
+function makeLabelChip(name, width) {
+  const chip = figma.createFrame();
+  chip.name = 'Label';
+  chip.layoutMode = 'HORIZONTAL';
+  chip.primaryAxisSizingMode = 'AUTO';
+  chip.counterAxisSizingMode = 'AUTO';
+  chip.itemSpacing = 6;
+  chip.fills = [];
+  chip.clipsContent = false;
+
   const nameNode = figma.createText();
   nameNode.fontName = { family: 'Inter', style: 'Medium' };
   nameNode.fontSize = 11;
   nameNode.characters = name;
   nameNode.fills = [{ type: 'SOLID', color: { r: 0.55, g: 0.55, b: 0.55 } }];
-  nameNode.x = x;
-  nameNode.y = y;
+  chip.appendChild(nameNode);
 
   const widthNode = figma.createText();
   widthNode.fontName = { family: 'Inter', style: 'Regular' };
   widthNode.fontSize = 11;
   widthNode.characters = `${width}px`;
   widthNode.fills = [{ type: 'SOLID', color: { r: 0.38, g: 0.38, b: 0.38 } }];
-  widthNode.x = x + nameNode.width + 6;
-  widthNode.y = y;
+  chip.appendChild(widthNode);
 
-  return [nameNode, widthNode];
+  return chip;
 }

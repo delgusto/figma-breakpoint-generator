@@ -602,7 +602,16 @@
 
         <!-- Expandable: only relevant when labels are on -->
         <div id="label-options" style="display:none; border-top:1px solid var(--border2); padding:10px 0 4px;">
-          <div class="subgroup-label" style="margin-bottom:6px;">Label component</div>
+          <div class="setting-row" style="padding-top:0;">
+            <div>
+              <div class="setting-label">Group label with frame</div>
+              <div class="setting-sub">Wrap each frame and its label in one auto-layout frame.</div>
+            </div>
+            <div class="setting-control">
+              <input type="checkbox" id="group-label-toggle" checked />
+            </div>
+          </div>
+          <div class="subgroup-label" style="margin:10px 0 6px;">Label component</div>
           <p style="font-size:11px; color:var(--dim); margin:0 0 8px;">
             Select your label component (or an instance of it) on the canvas, then click below.
           </p>
@@ -653,10 +662,19 @@
               <select id="appearance-light-select" style="width:100%; text-overflow:ellipsis;"></select>
             </div>
           </div>
-          <div class="setting-row stacked" style="border-bottom:none;">
+          <div class="setting-row stacked">
             <div><div class="setting-label">Dark mode</div></div>
             <div class="setting-control">
               <select id="appearance-dark-select" style="width:100%; text-overflow:ellipsis;"></select>
+            </div>
+          </div>
+          <div class="setting-row stacked" style="border-bottom:none;">
+            <div>
+              <div class="setting-label">Section background</div>
+              <div class="setting-sub">Default grey, transparent, or a colour variable (flips with the mode).</div>
+            </div>
+            <div class="setting-control">
+              <select id="section-bg-select" style="width:100%; text-overflow:ellipsis;"></select>
             </div>
           </div>
           <p id="appearance-hint" style="font-size:11px; color:var(--dim); margin:8px 0 2px;">
@@ -765,6 +783,7 @@ let state = {
   variableOptions: [],
   modeOptions: [],           // Every (collection, mode) pair from collections with >1 mode
   componentOptions: [],      // Components the user can pick as the label component
+  colorOptions: [],          // COLOR variables, for the section background picker
   sourceCollections: [],     // Multi-mode collections detected from the selected frame's bound variables
   defaultBreakpoints: null,  // User-saved baseline (null until they save one)
   preferredLibrary: null,    // Library name to pin to top of the dropdown
@@ -880,6 +899,7 @@ window.onmessage = (event) => {
       state.variableOptions = msg.variableOptions || [];
       state.modeOptions = msg.modeOptions || [];
       state.componentOptions = msg.componentOptions || [];
+      state.colorOptions = msg.colorOptions || [];
       state.defaultBreakpoints = msg.defaultBreakpoints || null;
       state.preferredLibrary = msg.preferredLibrary || null;
       state.filterToLibrary = !!msg.filterToLibrary;
@@ -912,6 +932,7 @@ window.onmessage = (event) => {
     case 'variables':
       state.variableOptions = msg.variableOptions || [];
       state.modeOptions = msg.modeOptions || [];
+      if (msg.colorOptions) state.colorOptions = msg.colorOptions;
       state.loadingTokens = false;
       renderSettingsBpList();
       renderSettings(); // refresh var-hint + library picker list
@@ -1919,6 +1940,8 @@ function renderSettings() {
   document.getElementById('labels-toggle').checked = state.settings.addLabels !== false;
   document.getElementById('clear-constraints-toggle').checked = state.settings.clearWidthConstraints === true;
   document.getElementById('live-updates-toggle').checked = state.settings.liveUpdates !== false;
+  const groupToggle = document.getElementById('group-label-toggle');
+  if (groupToggle) groupToggle.checked = state.settings.groupWithLabel !== false;
   syncLabelOptionsVisibility();
   // Show the manual Refresh button only when auto-update is off so the source
   // card stays minimal in the common case.
@@ -2094,6 +2117,7 @@ function renderAppearancePicker() {
   };
   fillModes(lightSelect, s.lightModeId || '');
   fillModes(darkSelect, s.darkModeId || '');
+  renderSectionBgPicker();
 
   // Reveal the light/dark mode pickers only once a collection is chosen.
   const opts = document.getElementById('appearance-options');
@@ -2112,6 +2136,37 @@ function renderAppearancePicker() {
       hint.style.color = 'var(--dim)';
     }
   }
+}
+
+// Stable value for a colour-variable option (local id, or library key).
+function colorOptionValue(c) {
+  return 'v:' + (c.id || c.key);
+}
+
+// Populate the section-background <select>: Default / Transparent / colour vars.
+function renderSectionBgPicker() {
+  const sel = document.getElementById('section-bg-select');
+  if (!sel) return;
+  const s = state.settings;
+  const cur = s.sectionBgMode === 'variable'
+    ? ('v:' + (s.sectionBgVariableId || s.sectionBgVariableKey || ''))
+    : (s.sectionBgMode || 'default');
+
+  const opts = ['<option value="default">Default (grey)</option>',
+                '<option value="transparent">Transparent</option>'];
+  let haveCur = (cur === 'default' || cur === 'transparent');
+  for (const c of (state.colorOptions || [])) {
+    const val = colorOptionValue(c);
+    if (val === cur) haveCur = true;
+    const lib = c.libraryName && c.libraryName !== 'Local' ? ' · ' + c.libraryName : '';
+    opts.push(`<option value="${escHtml(val)}" ${val === cur ? 'selected' : ''}>${escHtml(c.name)}${escHtml(lib)}</option>`);
+  }
+  if (!haveCur && s.sectionBgMode === 'variable') {
+    const nm = s.sectionBgVariableName || 'Saved colour';
+    opts.push(`<option value="${escHtml(cur)}" selected>${escHtml(nm)} (not in this file)</option>`);
+  }
+  sel.innerHTML = opts.join('');
+  sel.value = cur;
 }
 
 // Identify a stored component option. Library components are keyed by their
@@ -2375,6 +2430,30 @@ document.getElementById('use-selection-label-btn').addEventListener('click', () 
 document.getElementById('labels-toggle').addEventListener('change', (e) => {
   state.settings.addLabels = e.target.checked;
   syncLabelOptionsVisibility();
+  saveSettingsOnly();
+});
+
+document.getElementById('group-label-toggle').addEventListener('change', (e) => {
+  state.settings.groupWithLabel = e.target.checked;
+  saveSettingsOnly();
+});
+
+// Section background — Default / Transparent / a colour variable.
+document.getElementById('section-bg-select').addEventListener('change', (e) => {
+  const val = e.target.value;
+  const s = state.settings;
+  if (val === 'transparent') {
+    s.sectionBgMode = 'transparent';
+    s.sectionBgVariableId = null; s.sectionBgVariableKey = null; s.sectionBgVariableName = null;
+  } else if (val && val.indexOf('v:') === 0) {
+    const key = val.slice(2);
+    const c = (state.colorOptions || []).find(o => (o.id || o.key) === key);
+    s.sectionBgMode = 'variable';
+    if (c) { s.sectionBgVariableId = c.id; s.sectionBgVariableKey = c.key; s.sectionBgVariableName = c.name; }
+  } else {
+    s.sectionBgMode = 'default';
+    s.sectionBgVariableId = null; s.sectionBgVariableKey = null; s.sectionBgVariableName = null;
+  }
   saveSettingsOnly();
 });
 
