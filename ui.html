@@ -508,22 +508,84 @@
 
     /* ── Scrollbar ── */
     * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+
+    /* ── Top bar (Generate / Preferences headers) ── */
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; padding: 11px 14px;
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .topbar-title { font-size: 12px; font-weight: 600; color: var(--text); }
+    .icon-btn {
+      background: transparent; border: 1px solid var(--border);
+      border-radius: var(--radius-sm); color: var(--muted);
+      cursor: pointer; padding: 5px 10px; font-size: 11px;
+      display: inline-flex; align-items: center; gap: 5px;
+      transition: color 0.12s, border-color 0.12s;
+    }
+    .icon-btn:hover { color: var(--text); border-color: rgba(0,0,0,0.25); }
+    .icon-btn.primary { background: var(--ink); color: var(--ink-text); border-color: var(--ink); }
+    .icon-btn.primary:hover { opacity: 0.88; color: var(--ink-text); }
+
+    /* ── Wizard progress header ── */
+    .wizard-progress {
+      display: flex; align-items: center; gap: 2px;
+      padding: 10px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .wizard-step-chip {
+      flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px;
+      padding: 6px 8px; border-radius: var(--radius-sm);
+      cursor: pointer; background: transparent; border: none;
+      color: var(--muted); font-family: inherit; font-size: 11px; text-align: left;
+      transition: color 0.12s, background 0.12s;
+    }
+    .wizard-step-chip:hover { background: var(--surface2); color: var(--text); }
+    .wizard-step-chip .num {
+      width: 19px; height: 19px; border-radius: 50%; flex-shrink: 0;
+      border: 1px solid var(--border); display: grid; place-items: center;
+      font-size: 10px; font-weight: 600;
+    }
+    .wizard-step-chip .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .wizard-step-chip.active { color: var(--text); }
+    .wizard-step-chip.active .num { background: var(--ink); color: var(--ink-text); border-color: var(--ink); }
+
+    .wizard-head { margin-bottom: 12px; }
+    .wizard-step-title { font-size: 15px; font-weight: 600; color: var(--text); margin: 0 0 2px; }
+    .wizard-step-desc { font-size: 11px; color: var(--dim); margin: 0; line-height: 1.45; }
+
+    .footer-nav { display: flex; gap: 8px; }
+    .footer-nav .btn { flex: 1 1 0; width: auto; }
+    .btn-secondary {
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border); padding: 10px; font-size: 13px; font-weight: 500;
+    }
+    .btn-secondary:hover { border-color: rgba(0,0,0,0.25); }
+
+    /* ── Global status toast (shows on any panel) ── */
+    #status.status {
+      position: fixed; left: 14px; right: 14px; bottom: 66px; z-index: 50;
+      margin: 0; box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+    }
   </style>
 </head>
 <body>
 
-  <!-- ══════════════════════════════════════
-       MAIN PANEL
-  ══════════════════════════════════════ -->
-  <div id="panel-main" class="panel active">
+  <!-- Global status toast — fixed, shows on any panel -->
+  <div id="status" class="status"></div>
 
-    <div class="tabs">
-      <div class="tab active" data-tab="main">Generate</div>
-      <div class="tab" data-tab="settings">Settings</div>
+  <!-- ══════════════════════════════════════
+       GENERATE PANEL (landing)
+  ══════════════════════════════════════ -->
+  <div id="panel-generate" class="panel active">
+    <div class="topbar">
+      <div class="topbar-title">Breakpoint Generator</div>
+      <div style="display:flex; gap:6px;">
+        <button class="icon-btn primary" data-goto="step-breakpoints">Set up</button>
+        <button class="icon-btn" data-goto="prefs" title="Preferences" aria-label="Preferences">⚙</button>
+      </div>
     </div>
 
     <div class="panel-body">
-
       <!-- Source frame -->
       <div id="source-card" class="source-card empty">
         <div id="source-dot" class="source-dot empty"></div>
@@ -534,48 +596,39 @@
         <button type="button" id="refresh-selection-btn" class="btn-ghost" title="Capture current selection (only needed when auto-update is off)" style="display:none; padding:4px 8px; font-size:10px; flex-shrink:0;">Refresh</button>
       </div>
 
-      <!-- Breakpoints -->
-      <div class="section-label">Breakpoints</div>
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+        <div class="section-label" style="margin-bottom:0; border:none; padding:0;">Breakpoints</div>
+        <button class="btn-ghost" data-goto="step-breakpoints" style="padding:4px 8px; font-size:10px;">Edit setup</button>
+      </div>
       <div id="bp-list" class="bp-list"></div>
-
-      <!-- Status -->
-      <div id="status" class="status"></div>
-
     </div>
 
     <div class="panel-footer">
-      <button id="generate-btn" class="btn btn-primary" disabled>
-        Generate breakpoints
-      </button>
+      <button id="generate-btn" class="btn btn-primary" disabled>Generate breakpoints</button>
     </div>
-
   </div>
 
   <!-- ══════════════════════════════════════
-       SETTINGS PANEL
+       STEP 1 — BREAKPOINTS
   ══════════════════════════════════════ -->
-  <div id="panel-settings" class="panel">
-
-    <div class="tabs">
-      <div class="tab" data-tab="main">Generate</div>
-      <div class="tab active" data-tab="settings">Settings</div>
+  <div id="panel-step-breakpoints" class="panel">
+    <div class="wizard-progress">
+      <button class="wizard-step-chip active" data-goto="step-breakpoints"><span class="num">1</span><span class="lbl">Breakpoints</span></button>
+      <button class="wizard-step-chip" data-goto="step-labels"><span class="num">2</span><span class="lbl">Labels</span></button>
+      <button class="wizard-step-chip" data-goto="step-appearance"><span class="num">3</span><span class="lbl">Light &amp; dark</span></button>
     </div>
-
     <div class="panel-body">
+      <div class="wizard-head">
+        <div class="wizard-step-title">Breakpoints</div>
+        <p class="wizard-step-desc">Define the breakpoints to generate. Each can use a fixed width, a width variable, or a variant.</p>
+      </div>
 
-      <!-- Breakpoints editor -->
-      <div class="section-label">Breakpoints</div>
       <!-- Populated by renderVariantBanner() when the selection contains
            variant-backed instances. Holds the target picker + auto-match. -->
       <div id="variant-banner" class="variant-banner" style="display:none"></div>
       <div id="settings-bp-list"></div>
       <button class="btn-add" id="add-bp-btn">+ Add breakpoint</button>
 
-      <!-- ── OUTPUT: what each Generate run produces ── -->
-      <div class="section-head">
-        <div class="section-label">Output</div>
-        <p class="section-desc">What each Generate run places on the canvas.</p>
-      </div>
       <div class="settings-card">
         <div class="setting-row" style="border-bottom:none;">
           <div>
@@ -588,12 +641,46 @@
         </div>
       </div>
 
-      <!-- Labels -->
+      <div class="settings-card">
+        <div class="setting-row" style="border-bottom:none;">
+          <div>
+            <div class="setting-label">Remove min/max width</div>
+            <div class="setting-sub">Strip width constraints so clones resize freely. Off keeps the component’s own constraints.</div>
+          </div>
+          <div class="setting-control">
+            <input type="checkbox" id="clear-constraints-toggle" />
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="panel-footer">
+      <div class="footer-nav">
+        <button class="btn btn-secondary" data-goto="generate">Back</button>
+        <button class="btn btn-primary" data-goto="step-labels">Next</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       STEP 2 — LABELS
+  ══════════════════════════════════════ -->
+  <div id="panel-step-labels" class="panel">
+    <div class="wizard-progress">
+      <button class="wizard-step-chip" data-goto="step-breakpoints"><span class="num">1</span><span class="lbl">Breakpoints</span></button>
+      <button class="wizard-step-chip active" data-goto="step-labels"><span class="num">2</span><span class="lbl">Labels</span></button>
+      <button class="wizard-step-chip" data-goto="step-appearance"><span class="num">3</span><span class="lbl">Light &amp; dark</span></button>
+    </div>
+    <div class="panel-body">
+      <div class="wizard-head">
+        <div class="wizard-step-title">Labels</div>
+        <p class="wizard-step-desc">Add a name above each breakpoint — plain text, or your own label component.</p>
+      </div>
+
       <div class="settings-card">
         <div class="setting-row" id="labels-row" style="border-bottom:none;">
           <div>
             <div class="setting-label">Add labels above frames</div>
-            <div class="setting-sub">A breakpoint name above each frame — plain text, or a component you choose.</div>
+            <div class="setting-sub">A breakpoint name above each frame.</div>
           </div>
           <div class="setting-control">
             <input type="checkbox" id="labels-toggle" checked />
@@ -638,13 +725,35 @@
           <p id="label-component-hint" style="font-size:11px; color:var(--dim); margin:8px 0 2px;"></p>
         </div>
       </div>
+    </div>
+    <div class="panel-footer">
+      <div class="footer-nav">
+        <button class="btn btn-secondary" data-goto="step-breakpoints">Back</button>
+        <button class="btn btn-primary" data-goto="step-appearance">Next</button>
+      </div>
+    </div>
+  </div>
 
-      <!-- Light & dark sections -->
+  <!-- ══════════════════════════════════════
+       STEP 3 — LIGHT & DARK
+  ══════════════════════════════════════ -->
+  <div id="panel-step-appearance" class="panel">
+    <div class="wizard-progress">
+      <button class="wizard-step-chip" data-goto="step-breakpoints"><span class="num">1</span><span class="lbl">Breakpoints</span></button>
+      <button class="wizard-step-chip" data-goto="step-labels"><span class="num">2</span><span class="lbl">Labels</span></button>
+      <button class="wizard-step-chip active" data-goto="step-appearance"><span class="num">3</span><span class="lbl">Light &amp; dark</span></button>
+    </div>
+    <div class="panel-body">
+      <div class="wizard-head">
+        <div class="wizard-step-title">Light &amp; dark</div>
+        <p class="wizard-step-desc">Optionally wrap the output in two auto-layout frames — one light, one dark.</p>
+      </div>
+
       <div class="settings-card">
         <div class="setting-row stacked">
           <div>
             <div class="setting-label">Light &amp; dark frames</div>
-            <div class="setting-sub">Wrap the output in two auto-layout frames (light + dark, stacked). Leave as “None” to skip.</div>
+            <div class="setting-sub">Pick the variable collection holding your modes. Leave as “None” to skip.</div>
           </div>
           <div class="setting-control">
             <select id="appearance-collection-select" style="width:100%; text-overflow:ellipsis;"></select>
@@ -682,26 +791,26 @@
           </p>
         </div>
       </div>
-
-      <!-- ── FRAMES: how clones resize ── -->
-      <div class="section-head">
-        <div class="section-label">Frame sizing</div>
-        <p class="section-desc">How each cloned frame adapts to its breakpoint width.</p>
+    </div>
+    <div class="panel-footer">
+      <div class="footer-nav">
+        <button class="btn btn-secondary" data-goto="step-labels">Back</button>
+        <button class="btn btn-primary" data-goto="generate">Finish</button>
       </div>
-      <div class="settings-card">
-        <div class="setting-row" style="border-bottom:none;">
-          <div>
-            <div class="setting-label">Remove min/max width</div>
-            <div class="setting-sub">Strip width constraints so clones resize freely. Off keeps the component’s own constraints.</div>
-          </div>
-          <div class="setting-control">
-            <input type="checkbox" id="clear-constraints-toggle" />
-          </div>
-        </div>
-      </div>
+    </div>
+  </div>
 
-      <!-- ── TOKENS: where width values come from ── -->
-      <div class="section-head">
+  <!-- ══════════════════════════════════════
+       PREFERENCES
+  ══════════════════════════════════════ -->
+  <div id="panel-prefs" class="panel">
+    <div class="topbar">
+      <div class="topbar-title">Preferences</div>
+      <button class="icon-btn" data-goto="generate">Done</button>
+    </div>
+    <div class="panel-body">
+      <!-- ── TOKENS ── -->
+      <div class="section-head" style="margin-top:0;">
         <div class="section-label">Tokens &amp; variables</div>
         <p class="section-desc">Sources for the WIDTH variables shown in the breakpoint pickers.</p>
       </div>
@@ -741,7 +850,7 @@
         <div class="setting-row" style="border-bottom:none;">
           <div>
             <div class="setting-label">Update on selection change</div>
-            <div class="setting-sub">Detect variants automatically as you select frames. Turn off on large files — use Refresh on the Generate tab to capture a selection manually.</div>
+            <div class="setting-sub">Detect variants automatically as you select frames. Turn off on large files — use Refresh on the Generate screen to capture a selection manually.</div>
           </div>
           <div class="setting-control">
             <input type="checkbox" id="live-updates-toggle" checked />
@@ -764,13 +873,10 @@
       <button class="btn btn-ghost" id="reset-btn" style="width:100%; color:var(--red); border-color:rgba(224,82,82,0.3);">
         Reset to defaults
       </button>
-
     </div>
-
     <div class="panel-footer">
-      <button id="save-btn" class="btn btn-primary">Save settings</button>
+      <button class="btn btn-primary" data-goto="generate">Done</button>
     </div>
-
   </div>
 
 <script>
@@ -1002,28 +1108,36 @@ window.onmessage = (event) => {
 
 // ─── Tab switching ────────────────────────────────────────────────────────────
 
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    const target = tab.dataset.tab;
-    // Auto-save when leaving the Settings tab — don't lose edits
-    const wasOnSettings = document.getElementById('panel-settings').classList.contains('active');
-    if (wasOnSettings && target !== 'settings') {
-      state.settings.gap = parseInt(document.getElementById('gap-input').value) || 120;
-      state.settings.addLabels = document.getElementById('labels-toggle').checked;
-      state.settings.clearWidthConstraints = document.getElementById('clear-constraints-toggle').checked;
-      state.settings.liveUpdates = document.getElementById('live-updates-toggle').checked;
-      send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
-      // Reflect the updated live-updates flag on the source card (show/hide
-      // Refresh button) so the user sees it change without re-rendering all.
-      const refreshBtn = document.getElementById('refresh-selection-btn');
-      if (refreshBtn) refreshBtn.style.display = state.settings.liveUpdates === false ? 'inline-flex' : 'none';
-    }
-    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === target));
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    document.getElementById(`panel-${target}`).classList.add('active');
-    if (target === 'settings') renderSettingsBpList();
-    if (target === 'main') { renderBpList(); updateGenerateBtn(); }
-  });
+// ─── Panel navigation ─────────────────────────────────────────────────────────
+// Five panels: generate (landing), step-breakpoints, step-labels,
+// step-appearance, prefs. Any element with data-goto="<panel>" navigates there.
+function showPanel(name) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  const el = document.getElementById('panel-' + name);
+  if (el) el.classList.add('active');
+  // Scroll the newly shown panel body back to top.
+  const body = el && el.querySelector('.panel-body');
+  if (body) body.scrollTop = 0;
+
+  if (name === 'generate') {
+    renderBpList();
+    updateGenerateBtn();
+  } else {
+    // Sync every control to current state (idempotent), plus the bp editor list.
+    renderSettings();
+    renderSettingsBpList();
+  }
+
+  // Lazily enumerate colour variables the first time the Light & dark step is
+  // opened — it's an expensive pass we don't want on plugin open.
+  if (name === 'step-appearance' && !state.colorsRequested) {
+    state.colorsRequested = true;
+    send({ type: 'load-colors' });
+  }
+}
+
+document.querySelectorAll('[data-goto]').forEach(btn => {
+  btn.addEventListener('click', () => showPanel(btn.dataset.goto));
 });
 
 // ─── Variant schema helpers ───────────────────────────────────────────────────
@@ -2128,13 +2242,6 @@ function renderAppearancePicker() {
   const opts = document.getElementById('appearance-options');
   if (opts) opts.style.display = chosen ? 'block' : 'none';
 
-  // Lazily load colour variables the first time the frame options are shown —
-  // enumerating them is expensive, so we defer it off plugin-open.
-  if (chosen && !state.colorsRequested) {
-    state.colorsRequested = true;
-    send({ type: 'load-colors' });
-  }
-
   const hint = document.getElementById('appearance-hint');
   if (hint) {
     if (chosen && s.lightModeId && s.darkModeId) {
@@ -2356,21 +2463,21 @@ document.getElementById('generate-btn').addEventListener('click', () => {
 // The auto-match button lives inside #variant-banner, which is re-rendered
 // by renderVariantBanner — bind there, not here.
 
-document.getElementById('save-btn').addEventListener('click', () => {
-  state.settings.gap = parseInt(document.getElementById('gap-input').value) || 120;
-  state.settings.addLabels = document.getElementById('labels-toggle').checked;
-  state.settings.clearWidthConstraints = document.getElementById('clear-constraints-toggle').checked;
-  state.settings.liveUpdates = document.getElementById('live-updates-toggle').checked;
-  send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+// Settings persist live (no Save button). Gap + the two remaining toggles get
+// their own change handlers so edits stick as soon as they're made.
+document.getElementById('gap-input').addEventListener('input', (e) => {
+  state.settings.gap = parseInt(e.target.value) || 120;
+  saveSettingsOnly();
+});
+document.getElementById('clear-constraints-toggle').addEventListener('change', (e) => {
+  state.settings.clearWidthConstraints = e.target.checked;
+  saveSettingsOnly();
+});
+document.getElementById('live-updates-toggle').addEventListener('change', (e) => {
+  state.settings.liveUpdates = e.target.checked;
+  saveSettingsOnly();
   const refreshBtn = document.getElementById('refresh-selection-btn');
   if (refreshBtn) refreshBtn.style.display = state.settings.liveUpdates === false ? 'inline-flex' : 'none';
-  // Sync back to main panel
-  renderBpList();
-  updateGenerateBtn();
-  // Switch to main panel
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'main'));
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.getElementById('panel-main').classList.add('active');
 });
 
 // Manual selection refresh — fires when live updates are off and the user

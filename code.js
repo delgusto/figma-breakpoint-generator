@@ -1,7 +1,7 @@
 // ─── Breakpoint Generator — code.js ──────────────────────────────────────────
 // Runs in the Figma plugin sandbox. Communicates with ui.html via postMessage.
 
-figma.showUI(__html__, { width: 360, height: 580, title: 'Breakpoint Generator' });
+figma.showUI(__html__, { width: 460, height: 620, title: 'Breakpoint Generator' });
 
 // Resolve a variable's value in its default mode, following alias chains (max 10 hops).
 async function resolveVariableValue(variable) {
