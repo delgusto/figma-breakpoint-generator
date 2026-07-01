@@ -1,0 +1,8 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Breakpoint Generator icon: three frames of increasing width (mobile →
+       desktop), the widest in brand yellow. Export at 128×128 PNG for publish. -->
+  <rect width="128" height="128" rx="28" fill="#111111"/>
+  <rect x="30" y="33" width="30" height="17" rx="5" fill="#FFFFFF"/>
+  <rect x="30" y="56" width="50" height="17" rx="5" fill="#FFFFFF"/>
+  <rect x="30" y="79" width="72" height="17" rx="5" fill="#FFCC00"/>
+</svg>
