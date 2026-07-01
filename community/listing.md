@@ -6,36 +6,34 @@ Paste these into Figma's publish form. Edit anything in _italics_ to taste.
 Breakpoint Generator
 
 ## Tagline (short — shows under the name; keep < ~60 chars)
-Clone a frame across every breakpoint, instantly.
+One frame → every breakpoint. Labelled, in light & dark.
 
 ## Description
-Design responsively without the busywork. Select a frame, component, or
-instance, choose your breakpoints, and Generate — the plugin clones it at each
-width and lays the clones out side-by-side, labelled and ready to review.
+Select a frame, pick your breakpoints, hit Generate. Breakpoint Generator
+clones your design at every width — laid out side by side, labelled, and
+optionally in light and dark — so you review responsive behaviour in seconds
+instead of duplicating frames by hand.
 
 **What it does**
-- Generates a clone per breakpoint (mobile, tablet, laptop, desktop, wide — or
-  your own set), sized to each width and spaced neatly.
-- Drives width three ways per breakpoint: a fixed number, a **width variable /
-  token** (local or from a linked library), or a **variable mode** (applies the
-  mode so a bound width auto-resolves).
-- Switches **component variants** per breakpoint (e.g. XL / LG / MD / SM / XS),
-  auto-matching variant names to your breakpoints.
-- Adds a **label** above each frame — plain text, or your own design-system
-  label component with the breakpoint name written in.
-- Optionally wraps the output in **light + dark auto-layout frames**, each with
-  the right appearance mode applied, and a background that flips with the mode.
-- Groups each frame with its label, remembers your setup per-user across files,
-  and lets you pin a preferred token library.
+- Clones your frame at each breakpoint — mobile to wide, or your own set —
+  sized and spaced automatically.
+- Drives widths from your design system: a **width token**, **variable modes**
+  (XS–XL), or plain pixel values.
+- Switches **component variants** per breakpoint, auto-matched by name
+  (XL / LG / MD / SM / XS).
+- Labels every frame — plain text, or your own **label component** with the
+  breakpoint name written in.
+- One-click **light + dark**: wraps the output in two auto-layout frames with
+  the right appearance mode applied to each.
+- Remembers your setup per user, so the second run is a single click.
 
-**How to use**
-1. Select a frame / component / instance.
-2. Open the plugin → **Set up** → define breakpoints, labels, and (optionally)
-   light + dark.
+**How to use it**
+1. Select a frame, component, or instance.
+2. Open the plugin → **Set up** → choose breakpoints, labels, light & dark.
 3. Hit **Generate**.
 
-Design-system aware: reads library tokens, semantic alias chains, multi-mode
-collections, and variant component sets. No setup files, no dependencies.
+Works with library tokens, alias chains, multi-mode collections, and variant
+component sets. No config files, no network — everything stays in your file.
 
 ## Tags (pick up to ~12)
 responsive, breakpoints, design systems, variables, variant, modes, layout,
