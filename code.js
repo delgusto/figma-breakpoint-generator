@@ -660,7 +660,15 @@ function buildSchemaForSet(set) {
 }
 
 function buildSchemaForSetUncached(set) {
-  const defs = set.componentPropertyDefinitions || {};
+  // Reading componentPropertyDefinitions throws ("Component set has existing
+  // errors") when the set has variant conflicts. Guard it so one broken set in
+  // the selection can't crash the whole detection pass — we just skip it.
+  let defs;
+  try {
+    defs = set.componentPropertyDefinitions || {};
+  } catch (err) {
+    return null;
+  }
   const properties = [];
   for (const key of Object.keys(defs)) {
     const d = defs[key];
@@ -678,18 +686,21 @@ function buildSchemaForSetUncached(set) {
   // its variantProperties combo. The UI uses this to display the *actual*
   // width of the picked variant on the Generate tab (rather than the
   // misleading static bp.width input that the user can't drive when a
-  // variant is selected).
+  // variant is selected). Guard per-child reads too — a conflicted set can
+  // throw on variantProperties as well.
   const variantSizes = [];
   if ('children' in set && set.children) {
     for (const child of set.children) {
-      if (child.type !== 'COMPONENT') continue;
-      const vProps = child.variantProperties || null;
-      if (!vProps) continue;
-      variantSizes.push({
-        props: Object.assign({}, vProps),
-        width: Math.round(child.width),
-        height: Math.round(child.height),
-      });
+      try {
+        if (child.type !== 'COMPONENT') continue;
+        const vProps = child.variantProperties || null;
+        if (!vProps) continue;
+        variantSizes.push({
+          props: Object.assign({}, vProps),
+          width: Math.round(child.width),
+          height: Math.round(child.height),
+        });
+      } catch (err) { /* skip a broken variant child */ }
     }
   }
 
