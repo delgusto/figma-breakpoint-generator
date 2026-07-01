@@ -336,6 +336,21 @@
     }
     .btn-add:hover { border-color: var(--ink); color: var(--ink); background: var(--surface2); }
 
+    /* ── Driver segmented control (Width | Variant) ── */
+    .driver-toggle {
+      display: flex; gap: 4px; padding: 3px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .driver-opt {
+      flex: 1; padding: 7px 0; border: none; background: transparent;
+      border-radius: var(--radius-sm); cursor: pointer;
+      font-family: inherit; font-size: 12px; font-weight: 500; color: var(--muted);
+      transition: background 0.12s, color 0.12s;
+    }
+    .driver-opt:hover { color: var(--text); }
+    .driver-opt.active { background: var(--ink); color: var(--ink-text); }
+
     /* ── Row controls (main panel) ── */
     .bp-label-cell { font-size: 12px; color: var(--text); user-select: none; }
     .bp-width-cell { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; user-select: none; }
@@ -623,11 +638,36 @@
     <div class="panel-body">
       <div class="wizard-head">
         <div class="wizard-step-title">Breakpoints</div>
-        <p class="wizard-step-desc">Define the breakpoints to generate. Each can use a fixed width, a width variable, or a variant.</p>
+        <p class="wizard-step-desc">Choose what drives each breakpoint, then set them up below.</p>
       </div>
 
-      <!-- Populated by renderVariantBanner() when the selection contains
-           variant-backed instances. Holds the target picker + auto-match. -->
+      <!-- Driver: breakpoints are driven by Width OR Variant (mutually exclusive). -->
+      <div style="margin-bottom:10px;">
+        <div class="setting-label" style="margin-bottom:6px;">Breakpoints driven by</div>
+        <div class="driver-toggle">
+          <button class="driver-opt" data-driver="width">Width</button>
+          <button class="driver-opt" data-driver="variant">Variant</button>
+        </div>
+      </div>
+
+      <!-- Width source (shown when driver = Width). -->
+      <div class="settings-card" id="width-source-card">
+        <div class="setting-row stacked">
+          <div>
+            <div class="setting-label">Width source</div>
+            <div class="setting-sub">Pick a variable collection whose modes are your breakpoints, or keep “Per-breakpoint” to set each width individually.</div>
+          </div>
+          <div class="setting-control">
+            <select id="width-source-select" style="width:100%; text-overflow:ellipsis;"></select>
+          </div>
+        </div>
+        <div class="setting-row" style="padding-top:0; border-bottom:none;">
+          <button class="btn btn-ghost" id="detect-width-source-btn" style="width:100%;">Detect from selected frame</button>
+        </div>
+      </div>
+
+      <!-- Variant target (shown when driver = Variant). Populated by
+           renderVariantBanner() when the selection contains variant instances. -->
       <div id="variant-banner" class="variant-banner" style="display:none"></div>
       <div id="settings-bp-list"></div>
       <button class="btn-add" id="add-bp-btn">+ Add breakpoint</button>
@@ -902,7 +942,22 @@ let state = {
   variantCandidates: [],     // All component sets found in the selection, ranked by breakpoint affinity + shallowness
   variantTargetKey: null,    // Stable library key (or local node id fallback) of the user's chosen target — survives across files
   lastVariantSchemaKey: null,// Last set's stable key we synced against, used to skip redundant re-sync passes
+  // What drives the breakpoints: 'width' (fixed/variable/mode collection) or
+  // 'variant' (a variant component set). Mutually exclusive.
+  driver: 'width',
+  // Top-level width mode collection — when set, each breakpoint picks a mode
+  // from this collection instead of linking its own variable.
+  widthSourceId: null,       // Local collection id of the chosen width source
+  widthSourceKey: null,      // …and its stable library key (survives across files)
+  widthSourceCollections: [],// Collections detected from the selected frame (for the width picker)
+  lastWidthSourceKey: null,  // Last width source we auto-matched against
+  prevSourceId: null,        // The source before the current selection (to restore after a label pick)
 };
+
+// Stable key for a mode-bearing collection option.
+function collectionStableKey(c) {
+  return c ? (c.collectionKey || c.collectionId) : null;
+}
 
 // Stable storage key for a candidate component set. Library components have a
 // `componentSetKey` (publication key) that stays the same across files; local
@@ -1014,6 +1069,9 @@ window.onmessage = (event) => {
       state.preferredLibrary = msg.preferredLibrary || null;
       state.filterToLibrary = !!msg.filterToLibrary;
       state.variantTargetKey = msg.variantTargetKey || null;
+      state.widthSourceId = msg.widthSourceId || null;
+      state.widthSourceKey = msg.widthSourceKey || null;
+      state.driver = msg.driver === 'variant' ? 'variant' : 'width';
       state.loadingTokens = false;
       // Migrate legacy bp.variantProps (one flat object per bp) into the
       // new per-set-keyed shape. We attribute it to whichever stable key we
@@ -1025,6 +1083,11 @@ window.onmessage = (event) => {
       break;
 
     case 'selection':
+      // Remember the source we're leaving, so picking a label component (which
+      // changes the canvas selection) can be undone — see the capture handler.
+      if (state.source && state.source.id && (!msg.source || msg.source.id !== state.source.id)) {
+        state.prevSourceId = state.source.id;
+      }
       state.source = msg.source;
       state.variantCandidates = (msg.variantSchema && msg.variantSchema.candidates) || [];
       // If the previously-selected target is still among the new candidates,
@@ -1081,6 +1144,23 @@ window.onmessage = (event) => {
         renderAppearancePicker();
         showStatus(`✓ Detected: ${c.collectionName}`, 'success');
       }
+      break;
+    }
+
+    case 'width-source-collections': {
+      state.widthSourceCollections = msg.collections || [];
+      const btn = document.getElementById('detect-width-source-btn');
+      if (btn) { btn.disabled = false; btn.textContent = 'Detect from selected frame'; }
+      const cols = widthCollections();
+      if (!cols.length) {
+        showStatus('No multi-mode variable collection found on the selected frame.', 'error');
+        break;
+      }
+      // Prefer the collection the node's width is bound to; else the first.
+      let pick = msg.preferredId ? cols.find(c => c.collectionId === msg.preferredId) : null;
+      if (!pick) pick = cols[0];
+      applyWidthSource(pick);
+      showStatus(`✓ Width source: ${pick.collectionName}`, 'success');
       break;
     }
 
@@ -1352,17 +1432,15 @@ function renderBpList() {
     const row = document.createElement('div');
     row.className = 'bp-row' + (bp.enabled ? '' : ' disabled');
 
-    const link = getSelectedLink(bp);
-    const activeSchema = getActiveVariantSchema();
+    const driver = state.driver === 'variant' ? 'variant' : 'width';
+    const link = driver === 'width' ? getSelectedLink(bp) : null;
+    const activeSchema = driver === 'variant' ? getActiveVariantSchema() : null;
     const activeProps = activeSchema ? getBpVariantProps(bp, getSetStableKey(activeSchema)) : null;
     const hasVariant = !!(activeProps && Object.keys(activeProps).length);
     let widthDisplay, tag = '';
-    // Variant takes precedence over the static/linked width because the
-    // generate loop runs variant-only when variantProps is set. So the px
-    // shown here must come from the variant's intrinsic width — not bp.width.
-    if (hasVariant) {
-      const w = lookupVariantWidth(bp);
-      widthDisplay = w !== null ? `${w}px` : '—';
+    if (driver === 'variant') {
+      const w = hasVariant ? lookupVariantWidth(bp) : null;
+      widthDisplay = (w !== null && w !== undefined) ? `${w}px` : '—';
     } else if (link && link.kind === 'variable') {
       widthDisplay = link.value !== null ? `~${link.value}px` : 'library';
       tag = link.isLibrary ? 'lib' : 'var';
@@ -1402,12 +1480,52 @@ function renderBpList() {
 
 // ─── Render: settings breakpoint editor ──────────────────────────────────────
 
+function buildModeRowHtml(col, bp, i) {
+  const cur = bpModeInCollection(bp, col) ? bp.modeId : '';
+  const opts = ['<option value="">— pick a mode —</option>'].concat(
+    col.modes.map(function(m) {
+      const v = m.value != null ? ` · ${m.value}px` : '';
+      return `<option value="${escHtml(m.modeId)}" ${m.modeId === cur ? 'selected' : ''}>${escHtml(m.modeName)}${escHtml(v)}</option>`;
+    })
+  ).join('');
+  return `
+    <div class="settings-bp-variant-row">
+      <span class="settings-bp-variant-label" title="${escHtml(col.collectionName)}">Mode</span>
+      <select class="bp-mode-select" data-index="${i}" style="flex:1; min-width:0;">${opts}</select>
+    </div>`;
+}
+
 function renderSettingsBpList() {
-  renderVariantBanner();
+  const driver = state.driver === 'variant' ? 'variant' : 'width';
+
+  // Segmented control active state + show/hide each driver's picker.
+  document.querySelectorAll('.driver-opt').forEach(b =>
+    b.classList.toggle('active', b.dataset.driver === driver));
+  const widthCard = document.getElementById('width-source-card');
+  if (widthCard) widthCard.style.display = driver === 'width' ? 'block' : 'none';
+
+  renderWidthSource();
+  if (driver === 'variant') {
+    renderVariantBanner();
+    // No variant sets in the selection → prompt the user instead of a blank area.
+    if (!getActiveVariantSchema()) {
+      const vb = document.getElementById('variant-banner');
+      if (vb) {
+        vb.style.display = 'flex';
+        vb.innerHTML = '<span class="variant-banner-text">Select a component or instance with breakpoint variants on the canvas.</span>';
+      }
+    }
+  } else {
+    const vb = document.getElementById('variant-banner');
+    if (vb) { vb.style.display = 'none'; vb.innerHTML = ''; }
+  }
+
   const list = document.getElementById('settings-bp-list');
   list.innerHTML = '';
 
-  const schema = getActiveVariantSchema();
+  // Only the active driver contributes per-row controls.
+  const schema = driver === 'variant' ? getActiveVariantSchema() : null;
+  const widthCol = driver === 'width' ? getActiveWidthCollection() : null;
 
   state.breakpoints.forEach((bp, i) => {
     const card = document.createElement('div');
@@ -1420,22 +1538,46 @@ function renderSettingsBpList() {
     const selected = getSelectedLink(bp);
     const displayText = linkDisplayText(selected);
 
-    // Mode-linked or variant-set: disable the width field. Variant switching
-    // and width are mutually exclusive per row — variant wins if both are set.
-    const isModeLinked = !!selected && selected.kind === 'mode';
+    const isModeLinked = driver === 'width' && !!selected && selected.kind === 'mode';
     const activeProps = schema ? getBpVariantProps(bp, getSetStableKey(schema)) : null;
     const hasVariantSet = !!(activeProps && Object.keys(activeProps).length);
-    const linked = isModeLinked || hasVariantSet;
+    const usingWidthSource = driver === 'width' && !!widthCol;
+
+    // Disable the px field whenever something else drives width.
+    const linked = driver === 'variant' || usingWidthSource || isModeLinked;
+
     let displayWidth;
-    if (isModeLinked) {
+    if (driver === 'variant') {
+      const vw = hasVariantSet ? lookupVariantWidth(bp) : null;
+      displayWidth = vw !== null && vw !== undefined ? vw : '';
+    } else if (usingWidthSource) {
+      const m = widthCol.modes.find(x => x.modeId === bp.modeId && bpModeInCollection(bp, widthCol));
+      displayWidth = m && m.value != null ? m.value : '';
+    } else if (isModeLinked) {
       displayWidth = selected.value != null ? selected.value : '';
-    } else if (hasVariantSet) {
-      // Show the variant component's intrinsic width as a read-only hint so
-      // the user can sanity-check what the picked variant will produce.
-      const vw = lookupVariantWidth(bp);
-      displayWidth = vw !== null ? vw : '';
     } else {
       displayWidth = bp.width;
+    }
+
+    // Per-row control:
+    //  • Variant driver → no width control (the variant dropdown below drives it)
+    //  • Width + a source → mode dropdown
+    //  • Width + no source → full variable combobox
+    let controlHtml = '';
+    if (driver === 'width') {
+      controlHtml = usingWidthSource
+        ? buildModeRowHtml(widthCol, bp, i)
+        : `
+      <div class="var-combobox ${selected ? 'has-value' : ''}" data-index="${i}">
+        <input type="text" class="var-combobox-input ${selected ? 'has-value' : ''}" data-index="${i}"
+          placeholder="Link to variable…" value="${escHtml(displayText)}" autocomplete="off" />
+        <button type="button" class="var-combobox-clear" data-index="${i}" title="Unlink variable">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <path d="M2 8L8 2M2 2l6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <div class="var-combobox-popup" data-index="${i}"></div>
+      </div>`;
     }
 
     card.innerHTML = `
@@ -1459,16 +1601,7 @@ function renderSettingsBpList() {
           </svg>
         </button>
       </div>
-      <div class="var-combobox ${selected ? 'has-value' : ''}" data-index="${i}">
-        <input type="text" class="var-combobox-input ${selected ? 'has-value' : ''}" data-index="${i}"
-          placeholder="Link to variable…" value="${escHtml(displayText)}" autocomplete="off" />
-        <button type="button" class="var-combobox-clear" data-index="${i}" title="Unlink variable">
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-            <path d="M2 8L8 2M2 2l6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-          </svg>
-        </button>
-        <div class="var-combobox-popup" data-index="${i}"></div>
-      </div>
+      ${controlHtml}
       ${schema ? buildVariantRowHtml(schema, bp, i) : ''}
     `;
 
@@ -1523,6 +1656,18 @@ function renderSettingsBpList() {
   list.querySelectorAll('.var-combobox').forEach(el => {
     const i = parseInt(el.dataset.index);
     wireCombobox(el, i);
+  });
+
+  // Per-row mode dropdowns (shown when a top-level width source is active).
+  list.querySelectorAll('.bp-mode-select').forEach(el => {
+    el.addEventListener('change', e => {
+      const i = parseInt(e.target.dataset.index);
+      const bp = state.breakpoints[i];
+      const col = getActiveWidthCollection();
+      setBpMode(bp, col, e.target.value || null);
+      persistAndSync();
+      renderSettingsBpList(); // refresh the disabled width value
+    });
   });
 
   // Variant property dropdowns — write through to bp.variantPropsBySet[activeSetId]
@@ -2175,7 +2320,112 @@ function appearanceCollections() {
   return arr;
 }
 
-// Write a detected/selected collection into settings and auto-match modes
+// ─── Width source (top-level mode collection) ─────────────────────────────────
+
+// Unique ≥2-mode collections for the width-source picker, each mode carrying its
+// sampled width `value`. Detected-from-selection collections come first.
+function widthCollections() {
+  const byId = new Map();
+  for (const c of (state.widthSourceCollections || [])) {
+    if (!c.collectionId || byId.has(c.collectionId)) continue;
+    byId.set(c.collectionId, {
+      collectionId: c.collectionId,
+      collectionKey: c.collectionKey || null,
+      collectionName: c.collectionName || 'Collection',
+      libraryName: c.libraryName || 'Local',
+      modes: (c.modes || []).map(function(m) { return { modeId: m.modeId, modeName: m.modeName, value: m.value != null ? m.value : null }; }),
+      usedBySelection: true,
+    });
+  }
+  for (const m of (state.modeOptions || [])) {
+    const id = m.collectionId;
+    if (!id) continue;
+    if (!byId.has(id)) {
+      byId.set(id, {
+        collectionId: id,
+        collectionKey: m.collectionKey || null,
+        collectionName: m.collectionName || 'Collection',
+        libraryName: m.libraryName || (m.isLibrary ? 'Library' : 'Local'),
+        modes: [],
+        usedBySelection: false,
+      });
+    }
+    const entry = byId.get(id);
+    if (!entry.usedBySelection) entry.modes.push({ modeId: m.modeId, modeName: m.modeName, value: m.value != null ? m.value : null });
+  }
+  const arr = Array.from(byId.values());
+  arr.sort(function(a, b) {
+    if (a.usedBySelection !== b.usedBySelection) return a.usedBySelection ? -1 : 1;
+    return String(a.collectionName).localeCompare(String(b.collectionName));
+  });
+  return arr;
+}
+
+// The currently chosen width-source collection (resolved by key, then id).
+function getActiveWidthCollection() {
+  if (!state.widthSourceId && !state.widthSourceKey) return null;
+  const cols = widthCollections();
+  let c = state.widthSourceId ? cols.find(x => x.collectionId === state.widthSourceId) : null;
+  if (!c && state.widthSourceKey) {
+    c = cols.find(x => x.collectionKey && x.collectionKey === state.widthSourceKey);
+    if (c && c.collectionId !== state.widthSourceId) state.widthSourceId = c.collectionId; // heal stale id
+  }
+  return c || null;
+}
+
+// True when a breakpoint's stored mode belongs to the given collection.
+function bpModeInCollection(bp, col) {
+  if (!bp || !col || !bp.modeId) return false;
+  const byId = bp.modeCollectionId && bp.modeCollectionId === col.collectionId;
+  const byKey = bp.modeCollectionKey && col.collectionKey && bp.modeCollectionKey === col.collectionKey;
+  return !!(byId || byKey);
+}
+
+// Write a mode pick onto a breakpoint using the existing mode-link fields, or
+// clear them. Does not persist (caller does).
+function setBpMode(bp, col, modeId) {
+  if (!col || !modeId) {
+    bp.modeId = null; bp.modeCollectionKey = null; bp.modeCollectionId = null;
+    return;
+  }
+  bp.modeId = modeId;
+  bp.modeCollectionId = col.collectionId || null;
+  bp.modeCollectionKey = col.collectionKey || null;
+  // A mode drives width — clear any per-row variable link so they don't conflict.
+  bp.variableId = null; bp.variableKey = null;
+}
+
+// Auto-match each breakpoint to a mode of the active width collection by name.
+function autoMatchWidthModes(col) {
+  if (!col) return;
+  for (const bp of state.breakpoints) {
+    if (bpModeInCollection(bp, col)) continue; // keep an explicit pick already in this collection
+    const modeNames = col.modes.map(m => m.modeName);
+    const match = findMatchingOption(modeNames, bp.label);
+    const mode = match ? col.modes.find(m => m.modeName === match) : null;
+    setBpMode(bp, col, mode ? mode.modeId : null);
+  }
+}
+
+// Populate the width-source dropdown. Falls back to "Per-breakpoint".
+function renderWidthSource() {
+  const sel = document.getElementById('width-source-select');
+  if (!sel) return;
+  const cols = widthCollections();
+  const active = getActiveWidthCollection();
+  const activeId = active ? active.collectionId : '';
+  const opts = ['<option value="">Per-breakpoint (set each width)</option>'];
+  for (const c of cols) {
+    const lib = c.libraryName && c.libraryName !== 'Local' ? c.libraryName : 'Local';
+    const used = c.usedBySelection ? '✓ used here · ' : '';
+    const label = `${used}${c.collectionName} · ${lib} (${c.modes.length} modes)`;
+    opts.push(`<option value="${escHtml(c.collectionId)}" ${c.collectionId === activeId ? 'selected' : ''}>${escHtml(label)}</option>`);
+  }
+  sel.innerHTML = opts.join('');
+  sel.value = activeId;
+}
+
+// Write a detected/selected appearance collection into settings and auto-match modes
 // named light/dark. Persists.
 function autoFillAppearanceFrom(c) {
   const s = state.settings;
@@ -2441,15 +2691,24 @@ document.getElementById('generate-btn').addEventListener('click', () => {
   setGenerateLoading(true);
   clearTimeout(statusTimer);
   document.getElementById('status').className = 'status';
-  // The plugin sandbox reads `bp.variantProps` (the flat shape) at apply
-  // time, but we store picks under `bp.variantPropsBySet[stableKey]` so they
-  // survive across sets and files. Flatten the active slot into variantProps
-  // for the payload here, leaving the stored data untouched.
-  const activeSchema = getActiveVariantSchema();
+  // Build the payload for the active driver only, so the inactive driver's
+  // leftover per-bp data can't leak into the run.
+  const driver = state.driver === 'variant' ? 'variant' : 'width';
+  const activeSchema = driver === 'variant' ? getActiveVariantSchema() : null;
   const activeKey = activeSchema ? getSetStableKey(activeSchema) : null;
   const payloadBreakpoints = state.breakpoints.map(bp => {
-    const slot = activeKey ? getBpVariantProps(bp, activeKey) : null;
-    return Object.assign({}, bp, { variantProps: slot || null });
+    if (driver === 'variant') {
+      // Variant drives; flatten this bp's slot and drop width links so a stale
+      // mode/variable can't apply on an unmatched row.
+      const slot = activeKey ? getBpVariantProps(bp, activeKey) : null;
+      return Object.assign({}, bp, {
+        variantProps: slot || null,
+        modeId: null, modeCollectionKey: null, modeCollectionId: null,
+        variableId: null, variableKey: null,
+      });
+    }
+    // Width driver: never apply variants.
+    return Object.assign({}, bp, { variantProps: null });
   });
 
   send({
@@ -2546,8 +2805,12 @@ document.getElementById('label-textprop-select').addEventListener('change', (e) 
 
 // Capture the selected component (or instance of one) as the label component —
 // the reliable way to pick a library component not enumerable from the file.
+// Pass the source we were on so the sandbox can re-select it afterwards (the
+// label pick changes the canvas selection).
 document.getElementById('use-selection-label-btn').addEventListener('click', () => {
-  send({ type: 'capture-label-component' });
+  // By now state.source IS the label component just selected; the frame we want
+  // to restore is the one selected just before it.
+  send({ type: 'capture-label-component', restoreSelectionId: state.prevSourceId || null });
 });
 
 // Toggling "Add labels" reveals/hides the label-component options and persists.
@@ -2641,6 +2904,49 @@ document.getElementById('detect-collection-btn').addEventListener('click', (e) =
   btn.disabled = true;
   btn.textContent = 'Scanning…';
   send({ type: 'detect-source-collections' });
+});
+
+// ── Width source (top-level mode collection) ──
+function applyWidthSource(col) {
+  if (!col) {
+    state.widthSourceId = null; state.widthSourceKey = null;
+  } else {
+    state.widthSourceId = col.collectionId;
+    state.widthSourceKey = col.collectionKey || null;
+    state.lastWidthSourceKey = null;
+    autoMatchWidthModes(col);
+  }
+  send({ type: 'save-width-source', widthSourceId: state.widthSourceId, widthSourceKey: state.widthSourceKey });
+  send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+  renderSettingsBpList();
+  renderBpList();
+  updateGenerateBtn();
+}
+
+document.getElementById('width-source-select').addEventListener('change', (e) => {
+  const id = e.target.value;
+  const col = id ? widthCollections().find(c => c.collectionId === id) : null;
+  applyWidthSource(col);
+});
+
+document.getElementById('detect-width-source-btn').addEventListener('click', (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  send({ type: 'detect-width-source' });
+});
+
+// Driver segmented control — Width vs Variant (mutually exclusive).
+document.querySelectorAll('.driver-opt').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const d = btn.dataset.driver === 'variant' ? 'variant' : 'width';
+    if (state.driver === d) return;
+    state.driver = d;
+    send({ type: 'save-driver', driver: d });
+    renderSettingsBpList();
+    renderBpList();
+    updateGenerateBtn();
+  });
 });
 
 // Save current breakpoints as the user's personal baseline

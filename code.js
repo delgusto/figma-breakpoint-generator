@@ -77,7 +77,7 @@ let liveUpdatesEnabled = true;
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 async function init() {
-  const [savedBreakpoints, savedSettings, defaultBreakpoints, preferredLibrary, filterToLibrary, variantTargetId, variantTargetKey] = await Promise.all([
+  const [savedBreakpoints, savedSettings, defaultBreakpoints, preferredLibrary, filterToLibrary, variantTargetId, variantTargetKey, widthSourceId, widthSourceKey, driver] = await Promise.all([
     figma.clientStorage.getAsync('breakpoints'),
     figma.clientStorage.getAsync('settings'),
     figma.clientStorage.getAsync('defaultBreakpoints'),
@@ -85,6 +85,9 @@ async function init() {
     figma.clientStorage.getAsync('filterToLibrary'),
     figma.clientStorage.getAsync('variantTargetId'),   // legacy: local node id
     figma.clientStorage.getAsync('variantTargetKey'),  // stable library key
+    figma.clientStorage.getAsync('widthSourceId'),     // top-level width mode collection (local id)
+    figma.clientStorage.getAsync('widthSourceKey'),    // …and its stable library key
+    figma.clientStorage.getAsync('driver'),            // 'width' | 'variant'
   ]);
 
   const breakpoints = savedBreakpoints || DEFAULT_BREAKPOINTS;
@@ -114,6 +117,9 @@ async function init() {
     filterToLibrary: !!filterToLibrary,
     variantTargetId: variantTargetId || null,
     variantTargetKey: variantTargetKey || null,
+    widthSourceId: widthSourceId || null,
+    widthSourceKey: widthSourceKey || null,
+    driver: driver || 'width',
   });
   sendSelection();
 }
@@ -391,6 +397,21 @@ function collectVarIdsFromNode(n, set) {
 // the multi-mode collections those variables belong to. This surfaces the
 // collection the content ACTUALLY consumes — which the blanket library
 // enumeration may miss (e.g. it found an unrelated kit instead).
+// The collection id that a node's own `width` is bound to (if any, and if it
+// has ≥2 modes). Used to auto-pick the right width source on detect.
+async function widthBoundCollectionId(node) {
+  try {
+    const bv = node.boundVariables;
+    const w = bv && bv.width;
+    if (!w || !w.id) return null;
+    const v = await figma.variables.getVariableByIdAsync(w.id);
+    if (!v) return null;
+    const col = await figma.variables.getVariableCollectionByIdAsync(v.variableCollectionId);
+    if (col && col.modes && col.modes.length >= 2) return col.id;
+  } catch (err) {}
+  return null;
+}
+
 async function getCollectionsUsedByNode(root) {
   if (!root) return [];
 
@@ -825,6 +846,17 @@ figma.ui.onmessage = async (msg) => {
       ]);
       break;
 
+    case 'save-width-source':
+      await Promise.all([
+        figma.clientStorage.setAsync('widthSourceId', msg.widthSourceId || null),
+        figma.clientStorage.setAsync('widthSourceKey', msg.widthSourceKey || null),
+      ]);
+      break;
+
+    case 'save-driver':
+      await figma.clientStorage.setAsync('driver', msg.driver === 'variant' ? 'variant' : 'width');
+      break;
+
     case 'reset-settings': {
       await Promise.all([
         figma.clientStorage.deleteAsync('breakpoints'),
@@ -891,12 +923,31 @@ figma.ui.onmessage = async (msg) => {
       break;
     }
 
+    case 'detect-width-source': {
+      // Same subtree scan, but for the top-level width mode collection. Prefer
+      // the collection the node's own width is bound to; else all it uses.
+      const sel = figma.currentPage.selection;
+      const node = sel.length === 1 ? sel[0] : null;
+      const preferredId = node ? await widthBoundCollectionId(node) : null;
+      const collections = node ? await getCollectionsUsedByNode(node) : [];
+      figma.ui.postMessage({ type: 'width-source-collections', collections, preferredId });
+      break;
+    }
+
     case 'capture-label-component': {
       // Read the current selection and resolve it to a component/set choice.
       // This is how the user picks a library component that isn't enumerable
       // via the in-file scan — they just select it (or an instance of it).
       const choice = captureComponentChoiceFromSelection();
       figma.ui.postMessage({ type: 'label-component-captured', choice: choice || null });
+      // Picking the label component changed the canvas selection away from the
+      // frame the user is generating from. Re-select it so they don't lose it.
+      if (msg.restoreSelectionId) {
+        try {
+          const src = figma.getNodeById(msg.restoreSelectionId);
+          if (src && !src.removed) figma.currentPage.selection = [src];
+        } catch (err) {}
+      }
       break;
     }
 
