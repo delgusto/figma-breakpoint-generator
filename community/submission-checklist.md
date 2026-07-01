@@ -30,18 +30,25 @@ Upload in this order:
 - Name, tagline, description, tags — all in `community/listing.md`. Paste in.
 
 ## 5. Playground / template file — built, publish is **[you]**
-The file "Breakpoint generator Playground" is fully built and wired:
-- **Welcome card** (01 · Start here) with the 3-step instructions.
-- **Sample screen** — a small ticket-board app, width bound to
-  `Breakpoints/width` (modes XS 390 → XL 1440), every fill bound to an
-  `Appearance` light/dark token. Space to its right is kept clear for output.
-- **02 · What Generate makes** — example output at XS/SM/LG plus a light +
-  dark strip, made with the same mode-pinning the plugin uses.
-- **03 · Parts the plugin can use** — the `Nav bar` variant set (XS→XL) and
-  the `Breakpoint label` component.
+The file "Breakpoint generator Playground" follows the Figma-team playground
+pattern (designed as "Breakpoint Playground v2" in Claude Design, implemented
+on canvas with live wiring):
+- **Cover** — full-yellow hero with the 390/768/1280 mini-frame graphic.
+- **Contents** — jump links (real node links) to every section, plus the
+  dashed "how to try it" tip with a Generate keycap.
+- **Introduction and setup** — yellow sidebar card with the 3 steps; the
+  live **Sample screen** sits right below it (width bound to
+  `Breakpoints/width`, every fill on `Appearance` light/dark tokens; space to
+  its right is kept clear for plugin output).
+- **Expected output** — sidebar card with real mode-pinned clones at
+  390 / 768 / 1280 showing the 1→2→3 column reflow.
+- **Light & dark** — sidebar card with the same screen in both modes
+  (yellow accent constant across modes).
+- **Parts the plugin uses** — label component + nav bar shelf (XL→XS, menu
+  collapses to a hamburger at SM/XS). Source components sit below.
 - **Listing assets section** — icon, cover, and the three carousel frames.
-  **Delete this section before publishing the file** (it's for the plugin
-  listing, not for users).
+  **Delete this section (and the plugin screenshots section) before
+  publishing the file** — they're for the plugin listing, not for users.
 
 To publish the file: open it → **Share** (top right) → **Publish to
 Community** → set it as a **free template**, add a description (reuse the
