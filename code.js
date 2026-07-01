@@ -477,14 +477,14 @@ function componentChoiceFromNode(node, isLibrary) {
 // Resolve any selected node (instance / component / variant) up to the
 // component or set the user means to use as a label. Returns a choice object
 // or null when the selection isn't component-backed.
-function captureComponentChoiceFromSelection() {
+async function captureComponentChoiceFromSelection() {
   const sel = figma.currentPage.selection;
   if (sel.length !== 1) return null;
   let node = sel[0];
 
   // Instance → its main component.
   if (node.type === 'INSTANCE') {
-    try { node = node.mainComponent; } catch (err) { return null; }
+    try { node = await node.getMainComponentAsync(); } catch (err) { return null; }
   }
   if (!node) return null;
 
@@ -516,7 +516,7 @@ async function resolveLabelMainComponent(settings) {
     }
     // Local component — id is stable within the file.
     if (id) {
-      const node = figma.getNodeById ? figma.getNodeById(id) : null;
+      const node = await figma.getNodeByIdAsync(id);
       if (!node) return null;
       if (node.type === 'COMPONENT_SET') return node.defaultVariant || null;
       if (node.type === 'COMPONENT') return node;
@@ -598,15 +598,15 @@ function getSourceNode() {
   return null;
 }
 
-function sendSelection() {
+async function sendSelection() {
   const source = getSourceNode();
-  const node = source ? figma.getNodeById(source.id) : null;
+  const node = source ? await figma.getNodeByIdAsync(source.id) : null;
   // Variant detection is the only per-selection scan. It's depth- and
   // budget-capped (see collectInstancesWithDepth) so a huge selection can't
   // hang Figma. Appearance-collection detection is NOT run here — it walks the
   // whole subtree and resolves variables, which is too heavy for the hot path;
   // it runs only when the user clicks "Detect from selected frame".
-  const variantSchema = node ? detectVariantSchema(node) : null;
+  const variantSchema = node ? await detectVariantSchema(node) : null;
   figma.ui.postMessage({ type: 'selection', source, variantSchema });
 }
 
@@ -747,7 +747,7 @@ function collectInstancesWithDepth(root) {
   return results;
 }
 
-function detectVariantSchema(node) {
+async function detectVariantSchema(node) {
   if (!node) return null;
 
   const found = collectInstancesWithDepth(node);
@@ -757,7 +757,7 @@ function detectVariantSchema(node) {
   const bySet = new Map();
   for (const { inst, depth } of found) {
     try {
-      const main = inst.mainComponent;
+      const main = await inst.getMainComponentAsync();
       if (!main) continue;
       const parent = main.parent;
       if (!parent || parent.type !== 'COMPONENT_SET') continue;
@@ -949,13 +949,13 @@ figma.ui.onmessage = async (msg) => {
       // Read the current selection and resolve it to a component/set choice.
       // This is how the user picks a library component that isn't enumerable
       // via the in-file scan — they just select it (or an instance of it).
-      const choice = captureComponentChoiceFromSelection();
+      const choice = await captureComponentChoiceFromSelection();
       figma.ui.postMessage({ type: 'label-component-captured', choice: choice || null });
       // Picking the label component changed the canvas selection away from the
       // frame the user is generating from. Re-select it so they don't lose it.
       if (msg.restoreSelectionId) {
         try {
-          const src = figma.getNodeById(msg.restoreSelectionId);
+          const src = await figma.getNodeByIdAsync(msg.restoreSelectionId);
           if (src && !src.removed) figma.currentPage.selection = [src];
         } catch (err) {}
       }
@@ -978,7 +978,7 @@ figma.ui.onmessage = async (msg) => {
 // ─── Generate ─────────────────────────────────────────────────────────────────
 
 async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
-  const source = figma.getNodeById(sourceId);
+  const source = await figma.getNodeByIdAsync(sourceId);
   if (!source) throw new Error('Source not found — re-select the frame and try again.');
   if (!['FRAME', 'INSTANCE', 'COMPONENT'].includes(source.type)) {
     throw new Error('Select a Frame, Component or Instance.');
@@ -1056,7 +1056,7 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
     const hasVariant = variantTargetId && bp.variantProps && Object.keys(bp.variantProps).length;
 
     if (hasVariant) {
-      applyVariantProps(clone, bp.variantProps, variantTargetId);
+      await applyVariantProps(clone, bp.variantProps, variantTargetId);
     } else {
       const modeLinked = bp.modeId && (bp.modeCollectionKey || bp.modeCollectionId);
       let appliedViaMode = false;
@@ -1254,7 +1254,7 @@ async function applyFrameBackground(frame, settings) {
 // Walk a clone and call setProperties on every INSTANCE whose main component
 // belongs to the detected component set. Each call is independently guarded so
 // one failure doesn't block the rest.
-function applyVariantProps(node, props, componentSetId) {
+async function applyVariantProps(node, props, componentSetId) {
   const targets = [];
   if (node.type === 'INSTANCE') targets.push(node);
   if ('findAll' in node) {
@@ -1267,7 +1267,7 @@ function applyVariantProps(node, props, componentSetId) {
   for (var i = 0; i < targets.length; i++) {
     const inst = targets[i];
     try {
-      const main = inst.mainComponent;
+      const main = await inst.getMainComponentAsync();
       if (!main || !main.parent || main.parent.id !== componentSetId) continue;
       inst.setProperties(props);
     } catch (err) {}
