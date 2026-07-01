@@ -3,48 +3,57 @@
 Everything needed to publish, in order. Items marked **[you]** must be done in
 Figma (I can't touch your Figma account or build `.fig` files from here).
 
-## 0. Assets I've prepared (in `assets/`)
-- `icon.svg` — the 128×128 plugin icon.
-- `cover.svg` — the 1920×960 listing cover.
+## 0. Assets — all exported and ready (in `assets/`)
+- `icon.png` — 128×128 plugin icon (source: `icon.svg`).
+- `cover.png` — 1920×960 listing cover (source: `cover.svg`).
+- `screenshot-1-breakpoints.png` — 1920×960, generated XS/SM/LG output.
+- `screenshot-2-light-dark.png` — 1920×960, light + dark output.
+- `screenshot-3-guided-setup.png` — 1920×960, four plugin panels montage.
 - Listing copy — `community/listing.md`.
 
-**[you] Export them to PNG** (Figma wants PNGs at publish):
-1. Drag each SVG into a Figma file (or open in a browser and screenshot).
-2. Select the frame → Export → PNG:
-   - Icon: **128 × 128** (1×). Save as `icon.png`.
-   - Cover: **1920 × 960** (1×). Save as `cover.png`.
+All PNGs were exported from the playground file's "Listing assets" section.
+Re-export from there if anything changes.
 
 ## 1. Icon (128×128) — required
-- Use `icon.png`. Should read clearly at small sizes; the SVG is already simple.
+- Use `assets/icon.png`.
 
 ## 2. Cover art (1920×960) — required
-- Use `cover.png`.
+- Use `assets/cover.png`.
 
-## 3. Carousel screenshots (recommended, up to 3–5) **[you]**
-Capture these from the running plugin + canvas (⌘⇧4 on macOS, or Figma export):
-1. **The plugin panel** — Set up → Step 1 (breakpoints) or the Generate screen.
-2. **Output on canvas** — a row of generated breakpoints with labels.
-3. **Light + dark frames** — the stacked light/dark output (the money shot).
-4. _(optional)_ **Variant/variable picker** — showing DS-token linking.
-5. _(optional)_ **Step 3** — the light & dark setup step.
-Recommended size: 1920×1080 or the plugin window at 2× for crispness.
+## 3. Carousel screenshots — ready
+Upload in this order:
+1. `screenshot-1-breakpoints.png` — one frame → every breakpoint.
+2. `screenshot-2-light-dark.png` — light + dark output (the money shot).
+3. `screenshot-3-guided-setup.png` — the guided Set up wizard.
 
 ## 4. Listing text — required
 - Name, tagline, description, tags — all in `community/listing.md`. Paste in.
 
-## 5. Playground / template file (recommended) **[you]**
-A small `.fig` users can try the plugin in immediately. Build one file with:
-- **A sample screen frame** with auto-layout (e.g. a card or hero) whose width is
-  **bound to a WIDTH variable**.
-- **A width variable collection** with 3–5 **modes** named like your breakpoints
-  (XS / SM / MD / LG / XL), each resolving `width` to a different px value.
-- _(optional)_ **A component set with breakpoint variants** (XL…XS) so users can
-  try variant switching.
-- _(optional)_ **A label component** with a single text layer, to demo custom labels.
-- A short text note on the canvas: "Select the frame → run Breakpoint Generator →
-  Set up → Generate."
-Then **Publish** that file to Community as a free template and link it from the
-plugin listing (Support links).
+## 5. Playground / template file — built, publish is **[you]**
+The file "Breakpoint generator Playground" follows the Figma-team playground
+pattern (designed as "Breakpoint Playground v2" in Claude Design, implemented
+on canvas with live wiring):
+- **Cover** — full-yellow hero with the 390/768/1280 mini-frame graphic.
+- **Contents** — jump links (real node links) to every section, plus the
+  dashed "how to try it" tip with a Generate keycap.
+- **Introduction and setup** — yellow sidebar card with the 3 steps; the
+  live **Sample screen** sits right below it (width bound to
+  `Breakpoints/width`, every fill on `Appearance` light/dark tokens; space to
+  its right is kept clear for plugin output).
+- **Expected output** — sidebar card with real mode-pinned clones at
+  390 / 768 / 1280 showing the 1→2→3 column reflow.
+- **Light & dark** — sidebar card with the same screen in both modes
+  (yellow accent constant across modes).
+- **Parts the plugin uses** — label component + nav bar shelf (XL→XS, menu
+  collapses to a hamburger at SM/XS). Source components sit below.
+- **Listing assets section** — icon, cover, and the three carousel frames.
+  **Delete this section (and the plugin screenshots section) before
+  publishing the file** — they're for the plugin listing, not for users.
+
+To publish the file: open it → **Share** (top right) → **Publish to
+Community** → set it as a **free template**, add a description (reuse the
+tagline + first paragraph from `community/listing.md`), and publish. Then
+paste the published URL into the plugin listing's Support links.
 
 ## 6. Manifest — check before publishing
 Current `manifest.json` is fine. On publish Figma assigns a real plugin id
