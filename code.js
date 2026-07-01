@@ -77,7 +77,7 @@ let liveUpdatesEnabled = true;
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 async function init() {
-  const [savedBreakpoints, savedSettings, defaultBreakpoints, preferredLibrary, filterToLibrary, variantTargetId, variantTargetKey, widthSourceId, widthSourceKey] = await Promise.all([
+  const [savedBreakpoints, savedSettings, defaultBreakpoints, preferredLibrary, filterToLibrary, variantTargetId, variantTargetKey, widthSourceId, widthSourceKey, driver] = await Promise.all([
     figma.clientStorage.getAsync('breakpoints'),
     figma.clientStorage.getAsync('settings'),
     figma.clientStorage.getAsync('defaultBreakpoints'),
@@ -87,6 +87,7 @@ async function init() {
     figma.clientStorage.getAsync('variantTargetKey'),  // stable library key
     figma.clientStorage.getAsync('widthSourceId'),     // top-level width mode collection (local id)
     figma.clientStorage.getAsync('widthSourceKey'),    // …and its stable library key
+    figma.clientStorage.getAsync('driver'),            // 'width' | 'variant'
   ]);
 
   const breakpoints = savedBreakpoints || DEFAULT_BREAKPOINTS;
@@ -118,6 +119,7 @@ async function init() {
     variantTargetKey: variantTargetKey || null,
     widthSourceId: widthSourceId || null,
     widthSourceKey: widthSourceKey || null,
+    driver: driver || 'width',
   });
   sendSelection();
 }
@@ -849,6 +851,10 @@ figma.ui.onmessage = async (msg) => {
         figma.clientStorage.setAsync('widthSourceId', msg.widthSourceId || null),
         figma.clientStorage.setAsync('widthSourceKey', msg.widthSourceKey || null),
       ]);
+      break;
+
+    case 'save-driver':
+      await figma.clientStorage.setAsync('driver', msg.driver === 'variant' ? 'variant' : 'width');
       break;
 
     case 'reset-settings': {
