@@ -951,6 +951,7 @@ let state = {
   widthSourceKey: null,      // …and its stable library key (survives across files)
   widthSourceCollections: [],// Collections detected from the selected frame (for the width picker)
   lastWidthSourceKey: null,  // Last width source we auto-matched against
+  prevSourceId: null,        // The source before the current selection (to restore after a label pick)
 };
 
 // Stable key for a mode-bearing collection option.
@@ -1082,6 +1083,11 @@ window.onmessage = (event) => {
       break;
 
     case 'selection':
+      // Remember the source we're leaving, so picking a label component (which
+      // changes the canvas selection) can be undone — see the capture handler.
+      if (state.source && state.source.id && (!msg.source || msg.source.id !== state.source.id)) {
+        state.prevSourceId = state.source.id;
+      }
       state.source = msg.source;
       state.variantCandidates = (msg.variantSchema && msg.variantSchema.candidates) || [];
       // If the previously-selected target is still among the new candidates,
@@ -2799,8 +2805,12 @@ document.getElementById('label-textprop-select').addEventListener('change', (e) 
 
 // Capture the selected component (or instance of one) as the label component —
 // the reliable way to pick a library component not enumerable from the file.
+// Pass the source we were on so the sandbox can re-select it afterwards (the
+// label pick changes the canvas selection).
 document.getElementById('use-selection-label-btn').addEventListener('click', () => {
-  send({ type: 'capture-label-component' });
+  // By now state.source IS the label component just selected; the frame we want
+  // to restore is the one selected just before it.
+  send({ type: 'capture-label-component', restoreSelectionId: state.prevSourceId || null });
 });
 
 // Toggling "Add labels" reveals/hides the label-component options and persists.

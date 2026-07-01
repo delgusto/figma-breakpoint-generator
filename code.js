@@ -940,6 +940,14 @@ figma.ui.onmessage = async (msg) => {
       // via the in-file scan — they just select it (or an instance of it).
       const choice = captureComponentChoiceFromSelection();
       figma.ui.postMessage({ type: 'label-component-captured', choice: choice || null });
+      // Picking the label component changed the canvas selection away from the
+      // frame the user is generating from. Re-select it so they don't lose it.
+      if (msg.restoreSelectionId) {
+        try {
+          const src = figma.getNodeById(msg.restoreSelectionId);
+          if (src && !src.removed) figma.currentPage.selection = [src];
+        } catch (err) {}
+      }
       break;
     }
 
