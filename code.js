@@ -5,14 +5,14 @@ figma.showUI(__html__, { width: 460, height: 620, title: 'Breakpoint Generator' 
 
 // Resolve a variable's value in its default mode, following alias chains (max 10 hops).
 async function resolveVariableValue(variable) {
-  var seen = new Set();
-  var current = variable;
-  for (var hop = 0; hop < 10; hop++) {
+  const seen = new Set();
+  let current = variable;
+  for (let hop = 0; hop < 10; hop++) {
     if (seen.has(current.id)) return null; // circular
     seen.add(current.id);
-    var col = await figma.variables.getVariableCollectionByIdAsync(current.variableCollectionId);
+    const col = await figma.variables.getVariableCollectionByIdAsync(current.variableCollectionId);
     if (!col) return null;
-    var val = current.valuesByMode[col.defaultModeId];
+    const val = current.valuesByMode[col.defaultModeId];
     if (typeof val === 'number') return Math.round(val);
     // Alias — follow to the referenced variable
     if (val && typeof val === 'object' && val.type === 'VARIABLE_ALIAS') {
@@ -127,8 +127,8 @@ async function init() {
 // ─── Variable / token helpers ─────────────────────────────────────────────────
 
 async function getFloatVariables() {
-  var allVars = [];
-  var collections = [];
+  let allVars = [];
+  let collections = [];
 
   try {
     allVars = await figma.variables.getLocalVariablesAsync();
@@ -144,20 +144,19 @@ async function getFloatVariables() {
     return [];
   }
 
-  var result = [];
+  const result = [];
   // Track keys of already-imported library vars to avoid duplicates in the library fetch below
-  var importedKeys = new Set();
+  const importedKeys = new Set();
 
-  for (var i = 0; i < allVars.length; i++) {
-    var v = allVars[i];
+  for (const v of allVars) {
     if (v.resolvedType !== 'FLOAT') continue;
 
-    var resolvedVal = await resolveVariableValue(v);
+    const resolvedVal = await resolveVariableValue(v);
     if (resolvedVal === null) continue;
 
-    var col = null;
-    for (var j = 0; j < collections.length; j++) {
-      if (collections[j].id === v.variableCollectionId) { col = collections[j]; break; }
+    let col = null;
+    for (const c of collections) {
+      if (c.id === v.variableCollectionId) { col = c; break; }
     }
 
     if (v.key) importedKeys.add(v.key);
@@ -175,19 +174,17 @@ async function getFloatVariables() {
 
   // Fetch variables from linked libraries that haven't been imported into this file yet
   try {
-    var libCollections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
-    for (var k = 0; k < libCollections.length; k++) {
-      var libCol = libCollections[k];
+    const libCollections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+    for (const libCol of libCollections) {
       try {
-        var libVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(libCol.key);
-        for (var l = 0; l < libVars.length; l++) {
-          var lv = libVars[l];
+        const libVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(libCol.key);
+        for (const lv of libVars) {
           if (lv.resolvedType !== 'FLOAT') continue;
           if (importedKeys.has(lv.key)) continue;
           // Import to read the actual value (idempotent — same as using a library token on a frame)
-          var resolvedValue = null;
+          let resolvedValue = null;
           try {
-            var imported = await figma.variables.importVariableByKeyAsync(lv.key);
+            const imported = await figma.variables.importVariableByKeyAsync(lv.key);
             if (imported) resolvedValue = await resolveVariableValue(imported);
           } catch (err) {
             // Import failed — show without value
@@ -274,15 +271,15 @@ async function findWidthVariable(collection) {
 
 // Resolve a specific variable's value in a specific mode (not the default), following aliases.
 async function resolveVariableValueInMode(variable, modeId) {
-  var seen = new Set();
-  var current = variable;
-  for (var hop = 0; hop < 10; hop++) {
+  const seen = new Set();
+  let current = variable;
+  for (let hop = 0; hop < 10; hop++) {
     if (seen.has(current.id)) return null;
     seen.add(current.id);
-    var val = current.valuesByMode[modeId];
+    let val = current.valuesByMode[modeId];
     // If the mode doesn't exist on this variable, try the collection's default
     if (val === undefined) {
-      var col = await figma.variables.getVariableCollectionByIdAsync(current.variableCollectionId);
+      const col = await figma.variables.getVariableCollectionByIdAsync(current.variableCollectionId);
       if (col) val = current.valuesByMode[col.defaultModeId];
     }
     if (typeof val === 'number') return Math.round(val);
@@ -311,7 +308,7 @@ async function getVariableCollectionModes() {
       if (col.key) seenCollectionKeys.add(col.key);
       const widthVar = await findWidthVariable(col);
       for (const mode of col.modes) {
-        var modeValue = null;
+        let modeValue = null;
         if (widthVar) {
           try { modeValue = await resolveVariableValueInMode(widthVar, mode.modeId); } catch (err) {}
         }
@@ -343,7 +340,7 @@ async function getVariableCollectionModes() {
         if (!col || !col.modes || col.modes.length < 2) continue;
         const widthVar = await findWidthVariable(col);
         for (const mode of col.modes) {
-          var modeValue = null;
+          let modeValue = null;
           if (widthVar) {
             try { modeValue = await resolveVariableValueInMode(widthVar, mode.modeId); } catch (err) {}
           }
@@ -563,14 +560,14 @@ async function setInstanceLabelText(inst, textProp, text) {
 
 async function resolveWidth(bp) {
   try {
-    var variable = null;
+    let variable = null;
     if (bp.variableId) {
       variable = await figma.variables.getVariableByIdAsync(bp.variableId);
     } else if (bp.variableKey) {
       variable = await figma.variables.importVariableByKeyAsync(bp.variableKey);
     }
     if (variable) {
-      var val = await resolveVariableValue(variable);
+      const val = await resolveVariableValue(variable);
       if (val !== null) return val;
     }
   } catch (err) {
@@ -972,12 +969,21 @@ figma.ui.onmessage = async (msg) => {
         figma.notify(err.message, { error: true });
       }
       break;
+
+    default:
+      console.warn('Breakpoint Generator: unhandled message type', msg.type);
+      break;
   }
 };
 
 // ─── Generate ─────────────────────────────────────────────────────────────────
 
 async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
+  // Reject malformed payloads before touching the canvas — a partial run would
+  // leave orphaned clones behind.
+  if (!sourceId || !Array.isArray(breakpoints) || !settings) {
+    throw new Error('Invalid payload — missing sourceId, breakpoints, or settings.');
+  }
   const source = await figma.getNodeByIdAsync(sourceId);
   if (!source) throw new Error('Source not found — re-select the frame and try again.');
   if (!['FRAME', 'INSTANCE', 'COMPONENT'].includes(source.type)) {
@@ -1061,7 +1067,7 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
       const modeLinked = bp.modeId && (bp.modeCollectionKey || bp.modeCollectionId);
       let appliedViaMode = false;
       if (modeLinked) {
-        const collection = await resolveCollection(bp);
+        const collection = await resolveCollectionByKeyOrId(bp.modeCollectionId, bp.modeCollectionKey);
         if (collection && clone.setExplicitVariableModeForCollection) {
           try {
             clone.setExplicitVariableModeForCollection(collection, bp.modeId);
@@ -1260,12 +1266,11 @@ async function applyVariantProps(node, props, componentSetId) {
   if ('findAll' in node) {
     try {
       const nested = node.findAll(n => n.type === 'INSTANCE');
-      for (var i = 0; i < nested.length; i++) targets.push(nested[i]);
+      for (const n of nested) targets.push(n);
     } catch (err) {}
   }
 
-  for (var i = 0; i < targets.length; i++) {
-    const inst = targets[i];
+  for (const inst of targets) {
     try {
       const main = await inst.getMainComponentAsync();
       if (!main || !main.parent || main.parent.id !== componentSetId) continue;
@@ -1298,18 +1303,23 @@ function ensureAutoLayoutStructure(frame) {
   }
 }
 
-// Recursively clear min/max width constraints on a node and all descendants.
-// Library components often have minWidth set per variant, which prevents the
-// clone from resizing below that threshold. Clearing them lets the layout
-// respond freely to the new breakpoint width.
-function clearWidthConstraints(node) {
-  try {
-    if ('minWidth' in node && node.minWidth !== null) node.minWidth = null;
-    if ('maxWidth' in node && node.maxWidth !== null) node.maxWidth = null;
-  } catch (err) {}
-  if ('children' in node) {
-    for (var i = 0; i < node.children.length; i++) {
-      clearWidthConstraints(node.children[i]);
+// Clear min/max width constraints on a node and all descendants. Library
+// components often have minWidth set per variant, which prevents the clone
+// from resizing below that threshold. Clearing them lets the layout respond
+// freely to the new breakpoint width. Iterative BFS with the same node budget
+// as the other subtree walks, so a huge component can't freeze Figma.
+function clearWidthConstraints(root) {
+  const queue = [root];
+  let visited = 0;
+  while (queue.length && visited < MAX_DETECT_NODES) {
+    const node = queue.shift();
+    visited++;
+    try {
+      if ('minWidth' in node && node.minWidth !== null) node.minWidth = null;
+      if ('maxWidth' in node && node.maxWidth !== null) node.maxWidth = null;
+    } catch (err) {}
+    if ('children' in node) {
+      for (const child of node.children) queue.push(child);
     }
   }
 }
@@ -1319,9 +1329,6 @@ function applyAutoLayoutWidth(frame, targetWidth) {
   frame.resize(targetWidth, frame.height);
 }
 
-// Resolve the VariableCollection referenced by a mode-linked breakpoint.
-// Tries the local id first, then imports the first variable of the library collection
-// so Figma can surface the collection object via getVariableCollectionByIdAsync.
 // Resolve a VariableCollection from a local id and/or a library key. Library
 // collections are reached by importing one of their variables (same trick the
 // breakpoint mode flow uses).
@@ -1344,10 +1351,6 @@ async function resolveCollectionByKeyOrId(collectionId, collectionKey) {
     } catch (err) { /* fall through */ }
   }
   return null;
-}
-
-async function resolveCollection(bp) {
-  return resolveCollectionByKeyOrId(bp.modeCollectionId, bp.modeCollectionKey);
 }
 
 // ─── Label helper ─────────────────────────────────────────────────────────────
