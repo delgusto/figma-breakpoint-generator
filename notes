@@ -1,0 +1,117 @@
+## Review comments
+
+**1. Document `targetOrigin: '*'` in STORAGE_AND_NETWORK.md** (`ui.html`)
+
+`ui.html` uses `parent.postMessage({ pluginMessage: msg }, '*')` — the wildcard `targetOrigin` is standard Figma boilerplate and safe today given sandbox isolation. Worth documenting in `STORAGE_AND_NETWORK.md` alongside the existing network-access notes so future reviewers don't flag it without context. e.g.:
+
+```markdown
+### UI → sandbox messaging
+`ui.html` uses `parent.postMessage({ pluginMessage: msg }, '*')` (wildcard targetOrigin).
+This is the standard Figma plugin pattern — the sandbox validates all messages at the
+`figma.ui.onmessage` layer, and Figma's process isolation prevents external frames from
+reaching this origin. No action required; documented here to pre-empt future review flags.
+```
+
+---
+
+**2. Validate `generate(msg.payload)` before touching the canvas** (`code.js:1158`)
+
+`generate(msg.payload)` receives the raw UI message with no structural check before touching the Figma canvas. If the payload is malformed (e.g. `breakpoints` is missing or not an array), the function will partially execute — potentially creating orphaned clones before throwing. A guard at the top of `generate` would make the failure loud and clean:
+
+```js
+async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
+  if (!sourceId || !Array.isArray(breakpoints) || !settings) {
+    throw new Error('Invalid payload — missing sourceId, breakpoints, or settings.');
+  }
+  // ... rest unchanged
+```
+
+---
+
+**3. Add a `default` branch to the message router** (`code.js:1014`)
+
+The `figma.ui.onmessage` switch has no `default` branch. Unknown or misspelled message types are silently ignored. e.g.:
+
+```js
+default:
+  console.warn('Unhandled message type:', msg.type);
+  break;
+```
+
+---
+
+**4. `clearWidthConstraints` has no depth/node cap** (`code.js:1496`)
+
+`clearWidthConstraints` recursively walks the entire subtree with no depth limit or node budget. The equivalent BFS passes elsewhere (`getCollectionsUsedByNode`, `collectInstancesWithDepth`) both cap at `MAX_DETECT_NODES` for exactly this reason. On a large component this could freeze Figma during Generate.
+
+Two approaches — pick whichever fits the pattern you prefer:
+
+**Option A — iterative BFS (consistent with `collectInstancesWithDepth` and `getCollectionsUsedByNode`):**
+```js
+function clearWidthConstraints(root) {
+  const queue = [root];
+  let visited = 0;
+  while (queue.length && visited < MAX_DETECT_NODES) {
+    const node = queue.shift();
+    visited++;
+    try {
+      if ('minWidth' in node && node.minWidth !== null) node.minWidth = null;
+      if ('maxWidth' in node && node.maxWidth !== null) node.maxWidth = null;
+    } catch (err) {}
+    if ('children' in node) {
+      for (const child of node.children) queue.push(child);
+    }
+  }
+}
+```
+
+**Option B — keep recursion, inject a shared budget:**
+```js
+function clearWidthConstraints(node, budget = { remaining: MAX_DETECT_NODES }) {
+  if (budget.remaining <= 0) return;
+  budget.remaining--;
+  try {
+    if ('minWidth' in node && node.minWidth !== null) node.minWidth = null;
+    if ('maxWidth' in node && node.maxWidth !== null) node.maxWidth = null;
+  } catch (err) {}
+  if ('children' in node) {
+    for (const child of node.children) clearWidthConstraints(child, budget);
+  }
+}
+```
+
+Option A is preferable for consistency — the existing pattern also avoids call-stack depth limits on deeply nested trees as a bonus.
+
+---
+
+**5. Mixed `var`/`const`/`let`** (`code.js`)
+
+`getFloatVariables` and a few other early functions use `var` while the rest of the file uses `const`/`let`. `var`'s function-scoping is a common source of subtle bugs and the inconsistency makes the file harder to read at a glance. e.g. in `getFloatVariables`:
+
+```js
+// Before
+var allVars = [];
+var collections = [];
+for (var i = 0; i < allVars.length; i++) {
+
+// After
+const allVars = [];
+const collections = [];
+for (const v of allVars) {   // also simplifies the loop body
+```
+
+---
+
+**6. `resolveCollection` is a redundant wrapper** (`code.js:1540`)
+
+`resolveCollection(bp)` is a one-liner that just calls `resolveCollectionByKeyOrId(bp.modeCollectionId, bp.modeCollectionKey)`. Two functions for a single call site adds indirection without value — prefer inlining at `code.js:1255`:
+
+```js
+// Before
+const collection = await resolveCollection(bp);
+
+// After
+const collection = await resolveCollectionByKeyOrId(bp.modeCollectionId, bp.modeCollectionKey);
+```
+
+Then `resolveCollection` can be deleted entirely.
