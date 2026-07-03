@@ -4,7 +4,7 @@ Plain-language summary of where this plugin keeps data and whether it talks to t
 
 ## TL;DR
 
-- **No network access.** The plugin cannot make HTTP, WebSocket, or any external requests. The `manifest.json` has no `networkAccess` allowlist, which means Figma blocks outbound traffic at the plugin sandbox boundary.
+- **No network access.** The plugin cannot make HTTP, WebSocket, or any external requests. The `manifest.json` declares `"networkAccess": { "allowedDomains": ["none"] }`, so Figma blocks all outbound traffic at the plugin sandbox boundary.
 - **No telemetry, analytics, or external calls** of any kind — verified by a full-text scan of the source (`fetch`, `XMLHttpRequest`, `WebSocket`, `https://`, CDN hosts: zero matches).
 - **All persisted data lives in Figma's `clientStorage`** (per-user, per-plugin, local to the user's Figma install). Nothing is written to the file itself, no cookies, no `localStorage`.
 - **Read-only access to team libraries** for variable tokens, via Figma's own `figma.teamLibrary.*` APIs. The plugin never opens its own connection — Figma brokers the read.
@@ -18,10 +18,13 @@ All persistence uses `figma.clientStorage`, a key-value store scoped per user an
 | Key                  | Contents                                                                 | Purpose                                                 |
 | -------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------- |
 | `breakpoints`        | Current breakpoint rows (label, width, variable/mode links, enabled flag, variant props) | Restores the user's active breakpoint config on reopen. |
-| `settings`           | Gap, label toggle                                                        | Restores layout prefs on reopen.                        |
+| `settings`           | Gap, label options (incl. chosen label-component key/name), light+dark options (appearance collection key/name, mode ids), grouping and live-update toggles | Restores prefs on reopen.                               |
 | `defaultBreakpoints` | User's saved "reset to" defaults                                         | Lets the user override the factory defaults.            |
 | `preferredLibrary`   | Name/key of the team library the user last filtered to                   | UX convenience — remembers the filter.                  |
 | `filterToLibrary`    | Boolean for the "filter to preferred library" toggle                     | UX convenience.                                         |
+| `variantTargetId` / `variantTargetKey` | Node id / library key of the chosen breakpoint component set | Restores the variant target across files.               |
+| `widthSourceId` / `widthSourceKey`     | Id / key of the chosen width-mode variable collection        | Restores the width source across files.                 |
+| `driver`             | `'width'` or `'variant'` — which axis drives breakpoints                 | Restores the setup choice.                              |
 
 Source references: `code.js:46-52`, `code.js:385-424`.
 
@@ -44,16 +47,19 @@ Figma → Plugins → Development → Breakpoint Generator → "Clear plugin dat
 ```json
 {
   "name": "Breakpoint Generator",
-  "id": "breakpoint-generator-dgux-local",
+  "id": "1654297884267501450",
   "api": "1.0.0",
   "main": "code.js",
   "ui": "ui.html",
   "editorType": ["figma"],
-  "permissions": ["teamlibrary"]
+  "permissions": ["teamlibrary"],
+  "networkAccess": { "allowedDomains": ["none"] },
+  "documentAccess": "dynamic-page"
 }
 ```
 
-- **No `networkAccess` key.** Figma enforces that plugins without a `networkAccess` allowlist cannot reach any domain. Trying to `fetch()` or open a `WebSocket` fails at the sandbox.
+- **`networkAccess.allowedDomains: ["none"]`** — the explicit "no network" declaration. Figma enforces it at the sandbox: `fetch()` or `WebSocket` to any domain fails.
+- **`documentAccess: "dynamic-page"`** — the plugin only touches content on pages the user has open; all document reads use Figma's async APIs.
 - **`permissions: ["teamlibrary"]`** grants access to `figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync()`, `getVariablesInLibraryCollectionAsync()`, and `figma.variables.importVariableByKeyAsync()`. These calls stay inside Figma — the plugin asks Figma for library data, Figma handles the lookup over its own authenticated session. The plugin never sees or controls any endpoint.
 
 ### UI
@@ -70,6 +76,15 @@ Full scan of `code.js` and `ui.html` for `fetch`, `XMLHttpRequest`, `WebSocket`,
 
 - Zero matches in executable code paths.
 - The single `https://` reference found is in a code comment and is not a URL fetch.
+
+### UI → sandbox messaging
+
+`ui.html` uses `parent.postMessage({ pluginMessage: msg }, '*')` (wildcard
+`targetOrigin`). This is the standard Figma plugin pattern — the sandbox
+validates all messages at the `figma.ui.onmessage` layer (structural checks on
+the `generate` payload, an explicit message-type switch with a warning default),
+and Figma's process isolation prevents external frames from reaching this
+origin. Documented here to pre-empt future review flags; no action required.
 
 ### What "fetch" means in this codebase
 
