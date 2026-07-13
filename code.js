@@ -213,10 +213,33 @@ async function getFloatVariables() {
 // Enumerate COLOR variables (local + linked libraries) for the section
 // background picker. We don't resolve values — just name/id/key for display
 // and binding. Library vars are listed by key (no import needed until used).
-async function getColorVariables() {
+//
+// Big orgs can have dozens of libraries with thousands of colour tokens, so
+// this pass streams: local colours are emitted immediately, then each library
+// collection is fetched IN PARALLEL with its own timeout and emitted as it
+// lands. One huge or hung library can no longer stall the whole picker.
+// `onUpdate(result, done)` fires after every batch; `done` is true on the
+// final call.
+const COLOR_VARS_CAP = 1500;       // past this a dropdown is unusable anyway
+const COLOR_FETCH_TIMEOUT_MS = 15000;
+
+async function getColorVariables(onUpdate) {
   const result = [];
   const importedKeys = new Set();
 
+  const emit = (done) => {
+    result.sort(function(a, b) {
+      if (a.libraryName !== b.libraryName) return a.libraryName === 'Local' ? -1 : (b.libraryName === 'Local' ? 1 : (a.libraryName < b.libraryName ? -1 : 1));
+      return String(a.name).localeCompare(String(b.name));
+    });
+    if (onUpdate) onUpdate(result, done);
+  };
+  const withTimeout = (promise) => Promise.race([
+    promise,
+    new Promise((resolve, reject) => setTimeout(() => reject(new Error('library fetch timed out')), COLOR_FETCH_TIMEOUT_MS)),
+  ]);
+
+  // Local colours — fast; show them straight away.
   try {
     const localVars = await figma.variables.getLocalVariablesAsync();
     const cols = await figma.variables.getLocalVariableCollectionsAsync();
@@ -231,13 +254,16 @@ async function getColorVariables() {
       });
     }
   } catch (err) {}
+  emit(false);
 
+  // Library colours — all collections in flight at once, each guarded.
   try {
-    const libCollections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
-    for (const libCol of libCollections) {
+    const libCollections = await withTimeout(figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync());
+    await Promise.all(libCollections.map(async function(libCol) {
       try {
-        const libVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(libCol.key);
+        const libVars = await withTimeout(figma.teamLibrary.getVariablesInLibraryCollectionAsync(libCol.key));
         for (const lv of libVars) {
+          if (result.length >= COLOR_VARS_CAP) break;
           if (lv.resolvedType !== 'COLOR') continue;
           if (importedKeys.has(lv.key)) continue;
           result.push({
@@ -245,14 +271,17 @@ async function getColorVariables() {
             collection: libCol.name, libraryName: libCol.libraryName || 'Library', isLibrary: true,
           });
         }
-      } catch (err) {}
-    }
+        emit(false);
+      } catch (err) {
+        // Slow or unreadable collection — skip it, keep everything else.
+      }
+    }));
   } catch (err) {}
 
-  result.sort(function(a, b) {
-    if (a.libraryName !== b.libraryName) return a.libraryName === 'Local' ? -1 : (b.libraryName === 'Local' ? 1 : (a.libraryName < b.libraryName ? -1 : 1));
-    return String(a.name).localeCompare(String(b.name));
-  });
+  if (result.length >= COLOR_VARS_CAP) {
+    console.warn('Breakpoint Generator: colour list capped at ' + COLOR_VARS_CAP + ' tokens');
+  }
+  emit(true);
   return result;
 }
 
@@ -916,8 +945,11 @@ figma.ui.onmessage = async (msg) => {
 
     case 'load-colors': {
       // On-demand colour-variable enumeration for the frame background picker.
-      const colorOptions = await getColorVariables();
-      figma.ui.postMessage({ type: 'colors', colorOptions });
+      // Streams: the UI gets local colours immediately, then library batches
+      // as each collection loads (done=true on the final batch).
+      await getColorVariables(function(colorOptions, done) {
+        figma.ui.postMessage({ type: 'colors', colorOptions, done });
+      });
       break;
     }
 

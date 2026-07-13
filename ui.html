@@ -934,6 +934,7 @@ let state = {
   componentOptions: [],      // Components the user can pick as the label component
   colorOptions: [],          // COLOR variables, for the frame background picker (loaded lazily)
   colorsRequested: false,    // True once we've asked the sandbox to enumerate colours
+  colorsDone: false,         // True once the sandbox has finished streaming colour batches
   sourceCollections: [],     // Multi-mode collections detected from the selected frame's bound variables
   defaultBreakpoints: null,  // User-saved baseline (null until they save one)
   preferredLibrary: null,    // Library name to pin to top of the dropdown
@@ -1111,10 +1112,16 @@ window.onmessage = (event) => {
       refreshOpenPopups();
       break;
 
-    case 'colors':
+    case 'colors': {
+      // Colours stream in batches (locals first, then each library as it
+      // loads). Don't rebuild the <select> mid-interaction — a focused
+      // dropdown would snap shut; the final batch refreshes it regardless.
       state.colorOptions = msg.colorOptions || [];
-      renderSectionBgPicker();
+      state.colorsDone = !!msg.done;
+      const bgSel = document.getElementById('section-bg-select');
+      if (msg.done || !bgSel || document.activeElement !== bgSel) renderSectionBgPicker();
       break;
+    }
 
     case 'source-collections': {
       state.sourceCollections = msg.collections || [];
@@ -2527,8 +2534,8 @@ function renderSectionBgPicker() {
 
   const opts = ['<option value="transparent">Transparent</option>'];
   let haveCur = (cur === 'transparent');
-  const loading = !state.colorOptions.length && state.colorsRequested;
-  if (loading) opts.push('<option value="" disabled>Loading colours…</option>');
+  const loading = state.colorsRequested && !state.colorsDone;
+  if (loading) opts.push('<option value="" disabled>Loading library colours…</option>');
   for (const c of (state.colorOptions || [])) {
     const val = colorOptionValue(c);
     if (val === cur) haveCur = true;
