@@ -755,6 +755,7 @@
                 <select id="label-component-select" style="width:100%; text-overflow:ellipsis;"></select>
               </div>
             </div>
+            <div id="label-variant-rows"></div>
             <div class="setting-row stacked" style="border-bottom:none;">
               <div>
                 <div class="setting-label">Text property</div>
@@ -2663,11 +2664,16 @@ function applyLabelComponentChoice(choice) {
   s.labelComponentIsLibrary = !!choice.isLibrary;
   const props = choice.textProps || [];
   s.labelComponentTextProp = props.length === 1 ? props[0] : (s.labelComponentTextProp || null);
+  // Variant sets: keep the definitions for the dropdowns, and start from the
+  // variant the user actually had selected (null = the set's default).
+  s.labelComponentVariantDefs = (choice.isSet && choice.variantDefs && choice.variantDefs.length) ? choice.variantDefs : null;
+  s.labelComponentVariantProps = (choice.isSet && choice.variantProps) ? choice.variantProps : null;
 
   saveSettingsOnly();
   renderLabelComponentPicker();
   const propMsg = props.length ? '' : ' — text goes to its first text layer';
-  showStatus(`✓ Label component set: ${choice.name}${propMsg}`, 'success');
+  const variantMsg = s.labelComponentVariantProps ? ` (variant: ${Object.values(s.labelComponentVariantProps).join(' / ')})` : '';
+  showStatus(`✓ Label component set: ${choice.name}${variantMsg}${propMsg}`, 'success');
 }
 
 // Populate the label-component <select> + its text-property <select> from
@@ -2722,6 +2728,36 @@ function renderLabelComponentPicker() {
         const display = String(p).split('#')[0];
         return `<option value="${escHtml(p)}" ${p === currentProp ? 'selected' : ''}>${escHtml(display)}</option>`;
       })).join('');
+  }
+
+  // Variant dropdowns — one per VARIANT property on the chosen set, so the
+  // label doesn't silently land on the set's default variant.
+  const varWrap = document.getElementById('label-variant-rows');
+  if (varWrap) {
+    const defs = (currentVal && state.settings.labelComponentIsSet && state.settings.labelComponentVariantDefs) || [];
+    if (!defs.length) {
+      varWrap.innerHTML = '';
+    } else {
+      const chosenProps = state.settings.labelComponentVariantProps || {};
+      varWrap.innerHTML = defs.map(d => {
+        const cur = chosenProps[d.name] !== undefined ? chosenProps[d.name] : (d.defaultValue || '');
+        const rows = (d.options || []).map(o =>
+          `<option value="${escHtml(o)}" ${o === cur ? 'selected' : ''}>${escHtml(o)}</option>`).join('');
+        return `<div class="setting-row stacked">
+          <div><div class="setting-label">Variant · ${escHtml(d.name)}</div></div>
+          <div class="setting-control"><select data-variant-prop="${escHtml(d.name)}" style="width:100%; text-overflow:ellipsis;">${rows}</select></div>
+        </div>`;
+      }).join('');
+      varWrap.querySelectorAll('select[data-variant-prop]').forEach(selEl => {
+        selEl.addEventListener('change', (e) => {
+          const propName = e.target.getAttribute('data-variant-prop');
+          const s2 = state.settings;
+          s2.labelComponentVariantProps = Object.assign({}, s2.labelComponentVariantProps || {});
+          s2.labelComponentVariantProps[propName] = e.target.value;
+          saveSettingsOnly();
+        });
+      });
+    }
   }
 
   // Show the "Current / Text property" detail only once a component is set.
@@ -2873,6 +2909,8 @@ document.getElementById('label-component-select').addEventListener('change', (e)
     s.labelComponentIsSet = false;
     s.labelComponentIsLibrary = false;
     s.labelComponentTextProp = null;
+    s.labelComponentVariantProps = null;
+    s.labelComponentVariantDefs = null;
   } else {
     const opt = (state.componentOptions || []).find(o => componentOptionValue(o) === val);
     if (opt) {
@@ -2884,6 +2922,8 @@ document.getElementById('label-component-select').addEventListener('change', (e)
       // Auto-pick the first text property if exactly one exists; else clear.
       const props = opt.textProps || [];
       s.labelComponentTextProp = props.length === 1 ? props[0] : null;
+      s.labelComponentVariantDefs = (opt.isSet && opt.variantDefs && opt.variantDefs.length) ? opt.variantDefs : null;
+      s.labelComponentVariantProps = (opt.isSet && opt.variantProps) ? opt.variantProps : null;
     }
   }
   saveSettingsOnly();

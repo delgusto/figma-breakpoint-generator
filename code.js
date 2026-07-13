@@ -48,6 +48,8 @@ const DEFAULT_SETTINGS = {
   labelComponentIsSet: false,   // True when the chosen node is a COMPONENT_SET (import via set API, use defaultVariant)
   labelComponentIsLibrary: false, // True when the component is remote — import by key vs getNodeById
   labelComponentTextProp: null, // Which TEXT component property receives the breakpoint name
+  labelComponentVariantProps: null, // Chosen variant per VARIANT property (e.g. {Platform:'web'}) — null = the set's default variant
+  labelComponentVariantDefs: null,  // Variant property definitions [{name, options, defaultValue}] so the UI can offer dropdowns across sessions
   // Light/dark sections (PR B) — when a collection + both modes are set, the
   // plugin wraps the generated breakpoints in two Sections (light + dark),
   // each with the appearance variable mode applied. Empty = no sections.
@@ -512,10 +514,19 @@ async function getCollectionsUsedByNode(root) {
 function componentChoiceFromNode(node, isLibrary) {
   if (!node) return null;
   const textProps = [];
+  const variantDefs = [];
   try {
     const defs = node.componentPropertyDefinitions || {};
     for (const propName of Object.keys(defs)) {
-      if (defs[propName] && defs[propName].type === 'TEXT') textProps.push(propName);
+      if (!defs[propName]) continue;
+      if (defs[propName].type === 'TEXT') textProps.push(propName);
+      if (defs[propName].type === 'VARIANT') {
+        variantDefs.push({
+          name: propName,
+          options: (defs[propName].variantOptions || []).slice(),
+          defaultValue: defs[propName].defaultValue || null,
+        });
+      }
     }
   } catch (err) {}
   return {
@@ -526,6 +537,7 @@ function componentChoiceFromNode(node, isLibrary) {
     isLibrary: !!isLibrary,
     libraryName: isLibrary ? 'Library' : 'Local',
     textProps: textProps,
+    variantDefs: variantDefs,
   };
 }
 
@@ -537,19 +549,37 @@ async function captureComponentChoiceFromSelection() {
   if (sel.length !== 1) return null;
   let node = sel[0];
 
+  // Remember which variant the user actually had selected — resolving up to
+  // the set below loses it, and the set's DEFAULT variant is often not the
+  // one they meant (e.g. picked "web", default is "ios").
+  let variantProps = null;
+  const rememberVariants = (props) => {
+    for (const k of Object.keys(props || {})) {
+      const p = props[k];
+      // Instance componentProperties entries are {type, value}; a bare
+      // variant component's variantProperties are plain name → value.
+      const value = (p && typeof p === 'object' && 'value' in p) ? (p.type === 'VARIANT' ? p.value : undefined) : p;
+      if (value !== undefined) (variantProps = variantProps || {})[k] = value;
+    }
+  };
+
   // Instance → its main component.
   if (node.type === 'INSTANCE') {
+    try { rememberVariants(node.componentProperties); } catch (err) {}
     try { node = await node.getMainComponentAsync(); } catch (err) { return null; }
   }
   if (!node) return null;
 
   // A bare variant → surface its parent set.
   if (node.type === 'COMPONENT' && node.parent && node.parent.type === 'COMPONENT_SET') {
+    if (!variantProps) { try { rememberVariants(node.variantProperties); } catch (err) {} }
     node = node.parent;
   }
   if (node.type !== 'COMPONENT' && node.type !== 'COMPONENT_SET') return null;
 
-  return componentChoiceFromNode(node, !!node.remote);
+  const choice = componentChoiceFromNode(node, !!node.remote);
+  if (choice && choice.isSet) choice.variantProps = variantProps;
+  return choice;
 }
 
 // Resolve the configured label component to a main ComponentNode ready to
@@ -1200,6 +1230,13 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
         try {
           const inst = labelMain.createInstance();
           parent.appendChild(inst);
+          // Apply the chosen variant BEFORE writing the text — the text layer
+          // may differ per variant. Without this the label lands on the set's
+          // default variant regardless of what the user picked.
+          const vProps = settings.labelComponentVariantProps;
+          if (vProps && Object.keys(vProps).length) {
+            try { inst.setProperties(vProps); } catch (err) {}
+          }
           await setInstanceLabelText(inst, labelTextProp, bp.label);
           labelNode = inst;
         } catch (err) { labelNode = null; }
