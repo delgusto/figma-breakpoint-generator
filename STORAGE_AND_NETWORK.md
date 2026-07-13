@@ -25,6 +25,7 @@ All persistence uses `figma.clientStorage`, a key-value store scoped per user an
 | `variantTargetId` / `variantTargetKey` | Node id / library key of the chosen breakpoint component set | Restores the variant target across files.               |
 | `widthSourceId` / `widthSourceKey`     | Id / key of the chosen width-mode variable collection        | Restores the width source across files.                 |
 | `driver`             | `'width'` or `'variant'` — which axis drives breakpoints                 | Restores the setup choice.                              |
+| `defaultSectionBg`   | User-saved default frame background (mode + variable id/key/name)        | Seeds fresh settings; survives "Reset settings".        |
 
 Source references: `code.js:46-52`, `code.js:385-424`.
 

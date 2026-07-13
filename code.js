@@ -77,7 +77,7 @@ let liveUpdatesEnabled = true;
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 async function init() {
-  const [savedBreakpoints, savedSettings, defaultBreakpoints, preferredLibrary, filterToLibrary, variantTargetId, variantTargetKey, widthSourceId, widthSourceKey, driver] = await Promise.all([
+  const [savedBreakpoints, savedSettings, defaultBreakpoints, preferredLibrary, filterToLibrary, variantTargetId, variantTargetKey, widthSourceId, widthSourceKey, driver, defaultSectionBg] = await Promise.all([
     figma.clientStorage.getAsync('breakpoints'),
     figma.clientStorage.getAsync('settings'),
     figma.clientStorage.getAsync('defaultBreakpoints'),
@@ -88,10 +88,13 @@ async function init() {
     figma.clientStorage.getAsync('widthSourceId'),     // top-level width mode collection (local id)
     figma.clientStorage.getAsync('widthSourceKey'),    // …and its stable library key
     figma.clientStorage.getAsync('driver'),            // 'width' | 'variant'
+    figma.clientStorage.getAsync('defaultSectionBg'),  // user-saved default frame background
   ]);
 
   const breakpoints = savedBreakpoints || DEFAULT_BREAKPOINTS;
-  const settings = savedSettings || DEFAULT_SETTINGS;
+  // A user-saved default background seeds fresh settings (first run, or after
+  // a reset) — live settings always win once they exist.
+  const settings = savedSettings || Object.assign({}, DEFAULT_SETTINGS, defaultSectionBg || {});
   liveUpdatesEnabled = settings.liveUpdates !== false; // default true if absent
 
   // Read all FLOAT variables + multi-mode collections — both can be used as breakpoint links.
@@ -294,6 +297,32 @@ async function findWidthVariable(collection) {
       const v = await figma.variables.getVariableByIdAsync(varId);
       if (v && v.resolvedType === 'FLOAT' && v.name.toLowerCase().includes('width')) return v;
     } catch (err) {}
+  }
+  return null;
+}
+
+// Resolve a COLOR variable's value in a specific mode, following alias chains
+// (max 10 hops). Alias targets may live in other collections — when the
+// requested mode doesn't exist on the current variable, its own collection's
+// default mode is used. Returns an {r,g,b,a?} object or null.
+async function resolveColorValueInMode(variable, modeId) {
+  const seen = new Set();
+  let current = variable;
+  for (let hop = 0; hop < 10; hop++) {
+    if (seen.has(current.id)) return null;
+    seen.add(current.id);
+    let val = current.valuesByMode[modeId];
+    if (val === undefined) {
+      const col = await figma.variables.getVariableCollectionByIdAsync(current.variableCollectionId);
+      if (col) val = current.valuesByMode[col.defaultModeId];
+    }
+    if (val && typeof val === 'object' && val.type === 'VARIABLE_ALIAS') {
+      current = await figma.variables.getVariableByIdAsync(val.id);
+      if (!current) return null;
+      continue;
+    }
+    if (val && typeof val === 'object' && 'r' in val) return val;
+    return null;
   }
   return null;
 }
@@ -901,10 +930,11 @@ figma.ui.onmessage = async (msg) => {
       ]);
       // Library prefs + user defaults survive a reset. Component enumeration is
       // on-demand (not run here) to keep large files responsive.
-      const [defaultBreakpoints, preferredLibrary, filterToLibrary, variableOptions, modeOptions] = await Promise.all([
+      const [defaultBreakpoints, preferredLibrary, filterToLibrary, defaultSectionBg, variableOptions, modeOptions] = await Promise.all([
         figma.clientStorage.getAsync('defaultBreakpoints'),
         figma.clientStorage.getAsync('preferredLibrary'),
         figma.clientStorage.getAsync('filterToLibrary'),
+        figma.clientStorage.getAsync('defaultSectionBg'),
         getFloatVariables(),
         getVariableCollectionModes(),
       ]);
@@ -912,7 +942,7 @@ figma.ui.onmessage = async (msg) => {
         type: 'init',
         // Prefer user-saved defaults over factory defaults.
         breakpoints: defaultBreakpoints || DEFAULT_BREAKPOINTS,
-        settings: DEFAULT_SETTINGS,
+        settings: Object.assign({}, DEFAULT_SETTINGS, defaultSectionBg || {}),
         variableOptions,
         modeOptions,
         componentOptions: [],
@@ -973,6 +1003,46 @@ figma.ui.onmessage = async (msg) => {
       figma.ui.postMessage({ type: 'width-source-collections', collections, preferredId });
       break;
     }
+
+    case 'preview-color': {
+      // Resolve the selected background variable's colour in its collection's
+      // first two modes (typically light + dark) so the UI can show a swatch.
+      // Only the SELECTED token is ever resolved — resolving the whole list
+      // is exactly the perf hole the streaming loader avoids.
+      let variable = null;
+      try {
+        if (msg.variableId) variable = await figma.variables.getVariableByIdAsync(msg.variableId);
+      } catch (err) {}
+      try {
+        if (!variable && msg.variableKey) variable = await figma.variables.importVariableByKeyAsync(msg.variableKey);
+      } catch (err) {}
+      const swatches = [];
+      if (variable) {
+        try {
+          const col = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+          const modes = (col && col.modes ? col.modes : []).slice(0, 2);
+          for (const m of modes) {
+            const val = await resolveColorValueInMode(variable, m.modeId);
+            if (val) swatches.push({ modeName: m.name, color: { r: val.r, g: val.g, b: val.b, a: ('a' in val) ? val.a : 1 } });
+          }
+        } catch (err) {}
+      }
+      figma.ui.postMessage({ type: 'color-preview', requestId: msg.requestId || null, swatches });
+      break;
+    }
+
+    case 'save-default-bg':
+      // Persist the current frame-background choice as the user's default —
+      // seeds fresh settings and survives "Reset settings" (like
+      // defaultBreakpoints does for the breakpoint rows).
+      await figma.clientStorage.setAsync('defaultSectionBg', {
+        sectionBgMode: msg.sectionBgMode === 'variable' ? 'variable' : 'transparent',
+        sectionBgVariableId: msg.sectionBgVariableId || null,
+        sectionBgVariableKey: msg.sectionBgVariableKey || null,
+        sectionBgVariableName: msg.sectionBgVariableName || null,
+      });
+      figma.notify('Saved as your default frame background');
+      break;
 
     case 'capture-label-component': {
       // Read the current selection and resolve it to a component/set choice.

@@ -826,7 +826,12 @@
               <div class="setting-sub">Transparent, or a colour variable (flips with the mode).</div>
             </div>
             <div class="setting-control">
-              <select id="section-bg-select" style="width:100%; text-overflow:ellipsis;"></select>
+              <select id="section-bg-library" style="width:100%; text-overflow:ellipsis;"></select>
+              <div id="section-bg-token-row" style="display:none; gap:8px; align-items:center; margin-top:6px;">
+                <select id="section-bg-select" style="flex:1; min-width:0; text-overflow:ellipsis;"></select>
+                <span id="section-bg-swatch" style="display:none; flex:none; width:22px; height:22px; border-radius:6px; border:1px solid rgba(128,128,128,.45);"></span>
+              </div>
+              <button id="section-bg-save-default" class="btn btn-secondary" style="margin-top:8px; font-size:11px; padding:3px 10px;">Save as my default</button>
             </div>
           </div>
           <p id="appearance-hint" style="font-size:11px; color:var(--dim); margin:8px 0 2px;">
@@ -935,6 +940,8 @@ let state = {
   colorOptions: [],          // COLOR variables, for the frame background picker (loaded lazily)
   colorsRequested: false,    // True once we've asked the sandbox to enumerate colours
   colorsDone: false,         // True once the sandbox has finished streaming colour batches
+  bgLibrary: null,           // Library the bg-colour drill-down is scoped to (null = Transparent)
+  bgLibraryTouched: false,   // True once the user has driven the library selector themselves
   sourceCollections: [],     // Multi-mode collections detected from the selected frame's bound variables
   defaultBreakpoints: null,  // User-saved baseline (null until they save one)
   preferredLibrary: null,    // Library name to pin to top of the dropdown
@@ -1114,14 +1121,20 @@ window.onmessage = (event) => {
 
     case 'colors': {
       // Colours stream in batches (locals first, then each library as it
-      // loads). Don't rebuild the <select> mid-interaction — a focused
-      // dropdown would snap shut; the final batch refreshes it regardless.
+      // loads). Don't rebuild the <select>s mid-interaction — a focused
+      // dropdown would snap shut; the final batch refreshes them regardless.
       state.colorOptions = msg.colorOptions || [];
       state.colorsDone = !!msg.done;
-      const bgSel = document.getElementById('section-bg-select');
-      if (msg.done || !bgSel || document.activeElement !== bgSel) renderSectionBgPicker();
+      const focused = document.activeElement;
+      const busy = focused && (focused.id === 'section-bg-select' || focused.id === 'section-bg-library');
+      if (msg.done || !busy) renderSectionBgPicker();
       break;
     }
+
+    case 'color-preview':
+      // Ignore stale responses — only the latest request updates the swatch.
+      if (msg.requestId === bgPreviewSeq) updateBgSwatch(msg.swatches || []);
+      break;
 
     case 'source-collections': {
       state.sourceCollections = msg.collections || [];
@@ -2522,32 +2535,104 @@ function colorOptionValue(c) {
   return 'v:' + (c.id || c.key);
 }
 
-// Populate the frame-background <select>: Transparent / colour vars. (Frames
-// have no useful grey default, so 'default' collapses to transparent.)
+// Populate the frame-background pickers: a library selector (Transparent /
+// Local / each linked library), then a token selector scoped to that library,
+// grouped by collection. (Frames have no useful grey default, so 'default'
+// collapses to transparent.)
 function renderSectionBgPicker() {
+  const libSel = document.getElementById('section-bg-library');
   const sel = document.getElementById('section-bg-select');
-  if (!sel) return;
+  const tokenRow = document.getElementById('section-bg-token-row');
+  if (!libSel || !sel || !tokenRow) return;
   const s = state.settings;
-  const cur = s.sectionBgMode === 'variable'
-    ? ('v:' + (s.sectionBgVariableId || s.sectionBgVariableKey || ''))
-    : 'transparent';
+  const isVar = s.sectionBgMode === 'variable';
+  const cur = isVar ? ('v:' + (s.sectionBgVariableId || s.sectionBgVariableKey || '')) : 'transparent';
 
-  const opts = ['<option value="transparent">Transparent</option>'];
-  let haveCur = (cur === 'transparent');
+  // Until the user drives the library selector, follow the saved token.
+  const curOpt = isVar ? (state.colorOptions || []).find(o => colorOptionValue(o) === cur) : null;
+  if (!state.bgLibraryTouched) state.bgLibrary = curOpt ? curOpt.libraryName : (isVar ? state.bgLibrary : null);
+
+  // Selector A — Transparent + every library present in the streamed list.
+  const libs = [];
+  for (const c of (state.colorOptions || [])) if (libs.indexOf(c.libraryName) === -1) libs.push(c.libraryName);
+  libs.sort((a, b) => a === 'Local' ? -1 : b === 'Local' ? 1 : a.localeCompare(b));
   const loading = state.colorsRequested && !state.colorsDone;
-  if (loading) opts.push('<option value="" disabled>Loading library colours…</option>');
+  const aOpts = ['<option value="">Transparent</option>'];
+  for (const l of libs) aOpts.push(`<option value="${escHtml(l)}">${escHtml(l)}</option>`);
+  if (loading) aOpts.push('<option value="" disabled>Loading libraries…</option>');
+  libSel.innerHTML = aOpts.join('');
+  libSel.value = (state.bgLibrary && libs.indexOf(state.bgLibrary) !== -1) ? state.bgLibrary : '';
+
+  // Selector B — tokens of the chosen library, grouped by collection.
+  if (!state.bgLibrary) {
+    tokenRow.style.display = 'none';
+    updateBgSwatch(null);
+    return;
+  }
+  tokenRow.style.display = 'flex';
+  const byCol = new Map();
   for (const c of (state.colorOptions || [])) {
-    const val = colorOptionValue(c);
-    if (val === cur) haveCur = true;
-    const lib = c.libraryName && c.libraryName !== 'Local' ? ' · ' + c.libraryName : '';
-    opts.push(`<option value="${escHtml(val)}" ${val === cur ? 'selected' : ''}>${escHtml(c.name)}${escHtml(lib)}</option>`);
+    if (c.libraryName !== state.bgLibrary) continue;
+    const g = c.collection || 'Other';
+    if (!byCol.has(g)) byCol.set(g, []);
+    byCol.get(g).push(c);
   }
-  if (!haveCur && s.sectionBgMode === 'variable') {
+  let haveCur = false;
+  const groups = [];
+  byCol.forEach((list, g) => {
+    const rows = [`<optgroup label="${escHtml(g)}">`];
+    for (const c of list) {
+      const val = colorOptionValue(c);
+      if (val === cur) haveCur = true;
+      rows.push(`<option value="${escHtml(val)}" ${val === cur ? 'selected' : ''}>${escHtml(c.name)}</option>`);
+    }
+    rows.push('</optgroup>');
+    groups.push(rows.join(''));
+  });
+  const savedMissing = isVar && !curOpt;
+  const bOpts = [`<option value="" disabled hidden ${haveCur || savedMissing ? '' : 'selected'}>Pick a colour…</option>`];
+  bOpts.push(...groups);
+  if (savedMissing) {
     const nm = s.sectionBgVariableName || 'Saved colour';
-    opts.push(`<option value="${escHtml(cur)}" selected>${escHtml(nm)} (not in this file)</option>`);
+    bOpts.push(`<option value="${escHtml(cur)}" selected>${escHtml(nm)} (not in this file)</option>`);
   }
-  sel.innerHTML = opts.join('');
-  sel.value = cur;
+  sel.innerHTML = bOpts.join('');
+  if (haveCur || savedMissing) sel.value = cur;
+  requestBgPreview();
+}
+
+// ── Background colour preview ────────────────────────────────────────────────
+// Only the SELECTED token is resolved (one sandbox round-trip), never the
+// whole list. The swatch shows the variable's first two modes side by side
+// (typically light | dark).
+let bgPreviewSeq = 0;
+function requestBgPreview() {
+  const s = state.settings;
+  if (s.sectionBgMode !== 'variable' || !(s.sectionBgVariableId || s.sectionBgVariableKey)) {
+    updateBgSwatch(null);
+    return;
+  }
+  const requestId = ++bgPreviewSeq;
+  send({ type: 'preview-color', variableId: s.sectionBgVariableId, variableKey: s.sectionBgVariableKey, requestId });
+}
+
+function bgSwatchCss(c) {
+  const b = v => Math.round(v * 255);
+  return `rgba(${b(c.r)},${b(c.g)},${b(c.b)},${c.a === undefined ? 1 : c.a})`;
+}
+function bgSwatchHex(c) {
+  const h = v => Math.round(v * 255).toString(16).padStart(2, '0');
+  return '#' + h(c.r) + h(c.g) + h(c.b);
+}
+function updateBgSwatch(swatches) {
+  const el = document.getElementById('section-bg-swatch');
+  if (!el) return;
+  if (!swatches || !swatches.length) { el.style.display = 'none'; el.title = ''; return; }
+  el.style.display = 'inline-block';
+  el.style.background = swatches.length === 1
+    ? bgSwatchCss(swatches[0].color)
+    : `linear-gradient(90deg, ${bgSwatchCss(swatches[0].color)} 50%, ${bgSwatchCss(swatches[1].color)} 50%)`;
+  el.title = swatches.map(sw => `${sw.modeName} ${bgSwatchHex(sw.color)}`).join('  ·  ');
 }
 
 // Identify a stored component option. Library components are keyed by their
@@ -2833,22 +2918,45 @@ document.getElementById('group-label-toggle').addEventListener('change', (e) => 
 });
 
 // Section background — Default / Transparent / a colour variable.
+// Library selector — scopes the token drill-down. Picking "Transparent"
+// clears the colour outright.
+document.getElementById('section-bg-library').addEventListener('change', (e) => {
+  state.bgLibraryTouched = true;
+  state.bgLibrary = e.target.value || null;
+  if (!state.bgLibrary) {
+    const s = state.settings;
+    s.sectionBgMode = 'transparent';
+    s.sectionBgVariableId = null; s.sectionBgVariableKey = null; s.sectionBgVariableName = null;
+    saveSettingsOnly();
+  }
+  renderSectionBgPicker();
+});
+
 document.getElementById('section-bg-select').addEventListener('change', (e) => {
   const val = e.target.value;
   const s = state.settings;
-  if (val === 'transparent') {
-    s.sectionBgMode = 'transparent';
-    s.sectionBgVariableId = null; s.sectionBgVariableKey = null; s.sectionBgVariableName = null;
-  } else if (val && val.indexOf('v:') === 0) {
+  if (val && val.indexOf('v:') === 0) {
     const key = val.slice(2);
     const c = (state.colorOptions || []).find(o => (o.id || o.key) === key);
     s.sectionBgMode = 'variable';
     if (c) { s.sectionBgVariableId = c.id; s.sectionBgVariableKey = c.key; s.sectionBgVariableName = c.name; }
   } else {
-    s.sectionBgMode = 'default';
+    s.sectionBgMode = 'transparent';
     s.sectionBgVariableId = null; s.sectionBgVariableKey = null; s.sectionBgVariableName = null;
   }
   saveSettingsOnly();
+  requestBgPreview();
+});
+
+document.getElementById('section-bg-save-default').addEventListener('click', () => {
+  const s = state.settings;
+  send({
+    type: 'save-default-bg',
+    sectionBgMode: s.sectionBgMode === 'variable' ? 'variable' : 'transparent',
+    sectionBgVariableId: s.sectionBgVariableId || null,
+    sectionBgVariableKey: s.sectionBgVariableKey || null,
+    sectionBgVariableName: s.sectionBgVariableName || null,
+  });
 });
 
 // Appearance (light/dark sections) pickers.
