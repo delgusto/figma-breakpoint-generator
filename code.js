@@ -79,7 +79,7 @@ let liveUpdatesEnabled = true;
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 async function init() {
-  const [savedBreakpoints, savedSettings, defaultBreakpoints, preferredLibrary, filterToLibrary, variantTargetId, variantTargetKey, widthSourceId, widthSourceKey, driver, defaultSectionBg] = await Promise.all([
+  const [savedBreakpoints, savedSettings, defaultBreakpoints, preferredLibrary, filterToLibrary, variantTargetId, variantTargetKey, widthSourceId, widthSourceKey, driver, defaultSectionBg, variantSetPrefs] = await Promise.all([
     figma.clientStorage.getAsync('breakpoints'),
     figma.clientStorage.getAsync('settings'),
     figma.clientStorage.getAsync('defaultBreakpoints'),
@@ -91,6 +91,7 @@ async function init() {
     figma.clientStorage.getAsync('widthSourceKey'),    // …and its stable library key
     figma.clientStorage.getAsync('driver'),            // 'width' | 'variant'
     figma.clientStorage.getAsync('defaultSectionBg'),  // user-saved default frame background
+    figma.clientStorage.getAsync('variantSetPrefs'),   // per-set enable/disable for the variant overlay
   ]);
 
   const breakpoints = savedBreakpoints || DEFAULT_BREAKPOINTS;
@@ -122,6 +123,7 @@ async function init() {
     filterToLibrary: !!filterToLibrary,
     variantTargetId: variantTargetId || null,
     variantTargetKey: variantTargetKey || null,
+    variantSetPrefs: variantSetPrefs || null,
     widthSourceId: widthSourceId || null,
     widthSourceKey: widthSourceKey || null,
     driver: driver || 'width',
@@ -942,6 +944,12 @@ figma.ui.onmessage = async (msg) => {
       ]);
       break;
 
+    case 'save-variant-prefs':
+      // { [stableSetKey]: boolean } — explicit per-set enable/disable for the
+      // variant overlay. Absence of a key means "use the default rule".
+      await figma.clientStorage.setAsync('variantSetPrefs', msg.variantSetPrefs || null);
+      break;
+
     case 'save-width-source':
       await Promise.all([
         figma.clientStorage.setAsync('widthSourceId', msg.widthSourceId || null),
@@ -960,11 +968,17 @@ figma.ui.onmessage = async (msg) => {
       ]);
       // Library prefs + user defaults survive a reset. Component enumeration is
       // on-demand (not run here) to keep large files responsive.
-      const [defaultBreakpoints, preferredLibrary, filterToLibrary, defaultSectionBg, variableOptions, modeOptions] = await Promise.all([
+      const [defaultBreakpoints, preferredLibrary, filterToLibrary, defaultSectionBg, variantSetPrefs, variantTargetId, variantTargetKey, widthSourceId, widthSourceKey, driver, variableOptions, modeOptions] = await Promise.all([
         figma.clientStorage.getAsync('defaultBreakpoints'),
         figma.clientStorage.getAsync('preferredLibrary'),
         figma.clientStorage.getAsync('filterToLibrary'),
         figma.clientStorage.getAsync('defaultSectionBg'),
+        figma.clientStorage.getAsync('variantSetPrefs'),
+        figma.clientStorage.getAsync('variantTargetId'),
+        figma.clientStorage.getAsync('variantTargetKey'),
+        figma.clientStorage.getAsync('widthSourceId'),
+        figma.clientStorage.getAsync('widthSourceKey'),
+        figma.clientStorage.getAsync('driver'),
         getFloatVariables(),
         getVariableCollectionModes(),
       ]);
@@ -979,6 +993,13 @@ figma.ui.onmessage = async (msg) => {
         defaultBreakpoints: defaultBreakpoints || null,
         preferredLibrary: preferredLibrary || null,
         filterToLibrary: !!filterToLibrary,
+        // Surviving prefs the reset init must not silently null in UI state.
+        variantSetPrefs: variantSetPrefs || null,
+        variantTargetId: variantTargetId || null,
+        variantTargetKey: variantTargetKey || null,
+        widthSourceId: widthSourceId || null,
+        widthSourceKey: widthSourceKey || null,
+        driver: driver || 'width',
       });
       break;
     }
@@ -1110,7 +1131,7 @@ figma.ui.onmessage = async (msg) => {
 
 // ─── Generate ─────────────────────────────────────────────────────────────────
 
-async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
+async function generate({ sourceId, breakpoints, settings, primaryVariantSetId, variantTargetId }) {
   // Reject malformed payloads before touching the canvas — a partial run would
   // leave orphaned clones behind.
   if (!sourceId || !Array.isArray(breakpoints) || !settings) {
@@ -1182,19 +1203,25 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
       clearWidthConstraints(clone);
     }
 
-    // Either / or per breakpoint:
-    //   bp.variantProps set → swap component variant, leave width alone.
-    //   otherwise           → apply width/mode logic as before.
-    //
-    // The UI is responsible for flattening its per-set storage
-    // (variantPropsBySet keyed by stable library key) into bp.variantProps
-    // for the active target before sending the payload — that way this loop
-    // does not need to know about storage keys, just the local node id used
-    // to match instances inside the clone (variantTargetId).
-    const hasVariant = variantTargetId && bp.variantProps && Object.keys(bp.variantProps).length;
+    // Variants are an additive overlay: each bp ships variantSets =
+    // [{ componentSetId, props }] for every enabled set. The PRIMARY set
+    // (primaryVariantSetId, only sent under the variant driver) keeps its old
+    // role — when this bp has primary picks, the swapped variant's intrinsic
+    // size drives the frame and the width/mode/resize path is skipped.
+    // Everything else applies AFTER sizing so auto-layout reflows the swapped
+    // children inside the final width.
+    const primaryId = primaryVariantSetId || variantTargetId || null;
+    let entries = Array.isArray(bp.variantSets) ? bp.variantSets : null;
+    if (!entries && primaryId && bp.variantProps && Object.keys(bp.variantProps).length) {
+      // Legacy payload shape — a flat props object for the single target.
+      entries = [{ componentSetId: primaryId, props: bp.variantProps }];
+    }
+    entries = (entries || []).filter(e => e && e.componentSetId && e.props && Object.keys(e.props).length);
+    const primaryEntry = primaryId ? entries.find(e => e.componentSetId === primaryId) : null;
+    const secondary = entries.filter(e => e !== primaryEntry);
 
-    if (hasVariant) {
-      await applyVariantProps(clone, bp.variantProps, variantTargetId);
+    if (primaryEntry) {
+      await applyVariantSets(clone, [primaryEntry]);
     } else {
       const modeLinked = bp.modeId && (bp.modeCollectionKey || bp.modeCollectionId);
       let appliedViaMode = false;
@@ -1219,6 +1246,10 @@ async function generate({ sourceId, breakpoints, settings, variantTargetId }) {
         }
       }
     }
+
+    // Secondary sets switch after sizing and before actualWidth is read, so
+    // label spacing reflects the post-swap layout.
+    if (secondary.length) await applyVariantSets(clone, secondary);
 
     const actualWidth = clone.width || bp.width;
     clone.x = cursor;
@@ -1396,10 +1427,19 @@ async function applyFrameBackground(frame, settings) {
 
 // ─── Variant helper ───────────────────────────────────────────────────────────
 
-// Walk a clone and call setProperties on every INSTANCE whose main component
-// belongs to the detected component set. Each call is independently guarded so
-// one failure doesn't block the rest.
-async function applyVariantProps(node, props, componentSetId) {
+// Walk a clone ONCE and switch every INSTANCE whose main component belongs to
+// one of the given sets. entries: [{ componentSetId, props }]. A single
+// subtree walk with a Map lookup keeps N enabled sets at one-walk cost. Each
+// setProperties is independently guarded so one failure doesn't block the
+// rest. (An instance's main component has exactly one parent set, so at most
+// one entry can match any given instance.)
+async function applyVariantSets(node, entries) {
+  const bySet = new Map();
+  for (const e of entries || []) {
+    if (e && e.componentSetId && e.props && Object.keys(e.props).length) bySet.set(e.componentSetId, e.props);
+  }
+  if (!bySet.size) return;
+
   const targets = [];
   if (node.type === 'INSTANCE') targets.push(node);
   if ('findAll' in node) {
@@ -1412,8 +1452,9 @@ async function applyVariantProps(node, props, componentSetId) {
   for (const inst of targets) {
     try {
       const main = await inst.getMainComponentAsync();
-      if (!main || !main.parent || main.parent.id !== componentSetId) continue;
-      inst.setProperties(props);
+      if (!main || !main.parent) continue;
+      const props = bySet.get(main.parent.id);
+      if (props) inst.setProperties(props);
     } catch (err) {}
   }
 }

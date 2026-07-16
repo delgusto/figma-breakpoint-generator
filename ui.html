@@ -247,6 +247,13 @@
       height: 26px; box-sizing: border-box;
     }
     .variant-banner button:hover { opacity: 0.85; }
+    .variant-banner .vs-label {
+      font-size: 10px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap;
+    }
+    .variant-set-row { display: flex; align-items: center; gap: 6px; min-width: 0; cursor: pointer; }
+    .variant-set-row .vs-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .variant-edit-row { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
 
     /* ── Inputs ── */
     input[type="text"], input[type="number"], select {
@@ -949,8 +956,10 @@ let state = {
   filterToLibrary: false,    // When true, hide libraries other than preferredLibrary
   loadingTokens: true,       // True while the sandbox is fetching variables + modes
   variantCandidates: [],     // All component sets found in the selection, ranked by breakpoint affinity + shallowness
-  variantTargetKey: null,    // Stable library key (or local node id fallback) of the user's chosen target — survives across files
-  lastVariantSchemaKey: null,// Last set's stable key we synced against, used to skip redundant re-sync passes
+  variantTargetKey: null,    // Stable library key (or local node id fallback) of the PRIMARY set — survives across files
+  variantSetPrefs: {},       // { [stableKey]: boolean } — explicit enable/disable per set; absent key = default rule
+  variantEditKey: null,      // Which enabled set's dropdowns show in the per-bp rows (session-only view cursor)
+  lastVariantSyncSig: null,  // Sorted enabled-keys signature of the last sync pass, to skip redundant persists
   // What drives the breakpoints: 'width' (fixed/variable/mode collection) or
   // 'variant' (a variant component set). Mutually exclusive.
   driver: 'width',
@@ -987,6 +996,35 @@ function getActiveVariantSchema() {
     if (match) return match;
   }
   return state.variantCandidates[0];
+}
+
+// Is this candidate set part of the variant overlay? Explicit user prefs win;
+// otherwise breakpoint-looking sets (and the primary target) default to on.
+// Under the variant driver the primary can never be off — it drives width.
+function isSetEnabled(candidate) {
+  const key = getSetStableKey(candidate);
+  if (!key) return false;
+  if (state.driver === 'variant' && key === state.variantTargetKey) return true;
+  const prefs = state.variantSetPrefs || {};
+  if (Object.prototype.hasOwnProperty.call(prefs, key)) return !!prefs[key];
+  return candidate.breakpointAffinity > 0 || key === state.variantTargetKey;
+}
+
+function getEnabledVariantSchemas() {
+  return (state.variantCandidates || []).filter(isSetEnabled);
+}
+
+// The set whose dropdowns render in the per-bp rows: the user's view cursor if
+// it's still enabled, else the primary, else the first enabled set.
+function getEditingVariantSchema() {
+  const enabled = getEnabledVariantSchemas();
+  if (!enabled.length) return null;
+  if (state.variantEditKey) {
+    const m = enabled.find(c => getSetStableKey(c) === state.variantEditKey);
+    if (m) return m;
+  }
+  const primary = enabled.find(c => getSetStableKey(c) === state.variantTargetKey);
+  return primary || enabled[0];
 }
 
 // Per-breakpoint variant picks are now keyed by component-set id so the user
@@ -1078,6 +1116,7 @@ window.onmessage = (event) => {
       state.preferredLibrary = msg.preferredLibrary || null;
       state.filterToLibrary = !!msg.filterToLibrary;
       state.variantTargetKey = msg.variantTargetKey || null;
+      state.variantSetPrefs = msg.variantSetPrefs || {};
       state.widthSourceId = msg.widthSourceId || null;
       state.widthSourceKey = msg.widthSourceKey || null;
       state.driver = msg.driver === 'variant' ? 'variant' : 'width';
@@ -1104,6 +1143,12 @@ window.onmessage = (event) => {
       // selections that don't include this target) so the next time the user
       // selects the original component they get their picks back. The active
       // schema falls back to top-ranked when the saved key doesn't match.
+      // The edit cursor, though, is view state — reset it when its set left.
+      if (state.variantEditKey &&
+          !getEnabledVariantSchemas().some(c => getSetStableKey(c) === state.variantEditKey)) {
+        state.variantEditKey = null;
+      }
+      state.lastVariantSyncSig = null;
       syncVariantPropsWithSchema();
       renderSource();
       renderSettingsBpList();
@@ -1267,61 +1312,77 @@ function findMatchingOption(options, label) {
   // over fuzzy collisions when both forms exist in the same set.
   const exact = options.find(o => String(o).toLowerCase() === String(label || '').toLowerCase());
   if (exact) return exact;
-  return options.find(o => normalizeMatchToken(o) === target) || null;
+  const lead = options.find(o => normalizeMatchToken(o) === target);
+  if (lead) return lead;
+  // Compound option names ("XL/LG", "SM, XS") — match if ANY segment's token
+  // equals the label's token, so bp "LG" finds "XL/LG". Runs last so an exact
+  // "LG" option always wins over a compound one.
+  return options.find(o => matchTokensFor(o).indexOf(target) !== -1) || null;
+}
+
+// Split a compound option name into one normalized token per segment.
+function matchTokensFor(s) {
+  return String(s || '').split(/[\/|,+&]/).map(normalizeMatchToken).filter(Boolean);
 }
 
 function syncVariantPropsWithSchema() {
-  const schema = getActiveVariantSchema();
-  if (!schema) return false;
+  // Reconcile + auto-fill EVERY enabled set's slot. Disabled or absent sets'
+  // slots are never touched, so their picks survive an untick or a selection
+  // that doesn't contain them.
+  const enabled = getEnabledVariantSchemas();
+  if (!enabled.length) return false;
 
-  const setId = getSetStableKey(schema);
-  const schemaIdChanged = state.lastVariantSchemaKey !== setId;
+  const sig = enabled.map(getSetStableKey).sort().join('|');
+  const sigChanged = state.lastVariantSyncSig !== sig;
   let changed = false;
 
-  for (const bp of state.breakpoints) {
-    const existing = getBpVariantProps(bp, setId);
-    const current = existing ? Object.assign({}, existing) : {};
+  for (const schema of enabled) {
+    const setId = getSetStableKey(schema);
+    for (const bp of state.breakpoints) {
+      const existing = getBpVariantProps(bp, setId);
+      const current = existing ? Object.assign({}, existing) : {};
 
-    // Drop entries that point at properties/options the active set no longer
-    // exposes. Stale or renamed variants from previous edits get cleaned out.
-    for (const key of Object.keys(current)) {
-      const prop = schema.properties.find(p => p.name === key);
-      if (!prop || !prop.options.includes(current[key])) delete current[key];
-    }
+      // Drop entries that point at properties/options this set no longer
+      // exposes. Stale or renamed variants from previous edits get cleaned out.
+      for (const key of Object.keys(current)) {
+        const prop = schema.properties.find(p => p.name === key);
+        if (!prop || !prop.options.includes(current[key])) delete current[key];
+      }
 
-    // Auto-fill any UNSET property by case-insensitive label match. The
-    // inner `if (current[prop.name]) continue` is what protects manual
-    // picks from being overwritten — so we run this every sync, not only
-    // on the first encounter of the set. (An earlier guard limited this
-    // to "first encounter only", which broke auto-match on second visits
-    // when the slot already existed with partial data.)
-    for (const prop of schema.properties) {
-      if (current[prop.name]) continue;
-      const match = findMatchingOption(prop.options, bp.label);
-      if (match) current[prop.name] = match;
-    }
+      // Auto-fill any UNSET property by case-insensitive label match. The
+      // inner `if (current[prop.name]) continue` is what protects manual
+      // picks from being overwritten — so we run this every sync, not only
+      // on the first encounter of the set. (An earlier guard limited this
+      // to "first encounter only", which broke auto-match on second visits
+      // when the slot already existed with partial data.)
+      for (const prop of schema.properties) {
+        if (current[prop.name]) continue;
+        const match = findMatchingOption(prop.options, bp.label);
+        if (match) current[prop.name] = match;
+      }
 
-    const before = existing ? JSON.stringify(existing) : 'null';
-    const next = Object.keys(current).length ? current : null;
-    const after = next ? JSON.stringify(next) : 'null';
-    if (before !== after) {
-      setBpVariantProps(bp, setId, next);
-      changed = true;
+      const before = existing ? JSON.stringify(existing) : 'null';
+      const next = Object.keys(current).length ? current : null;
+      const after = next ? JSON.stringify(next) : 'null';
+      if (before !== after) {
+        setBpVariantProps(bp, setId, next);
+        changed = true;
+      }
     }
   }
 
-  state.lastVariantSchemaKey = setId;
-  if (changed && schemaIdChanged) {
+  state.lastVariantSyncSig = sig;
+  if (changed && sigChanged) {
     // Persist the freshly auto-matched picks so they survive a plugin reopen.
     send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
   }
   return changed;
 }
 
-// Force re-run auto-match against the active set's schema, overwriting that
-// set's slot for every breakpoint. Picks for OTHER sets are untouched.
+// Force re-run auto-match against the set currently being EDITED, overwriting
+// that set's slot for every breakpoint. Picks for OTHER sets are untouched.
 function forceAutoMatchVariants() {
-  const schema = getActiveVariantSchema();
+  const schema = getEditingVariantSchema();
   if (!schema) return;
   const setId = getSetStableKey(schema);
   for (const bp of state.breakpoints) {
@@ -1354,9 +1415,10 @@ function buildVariantRowHtml(schema, bp, i) {
   const clearBtn = hasAny
     ? `<button type="button" class="bp-variant-clear" data-index="${i}" title="Clear variant — use width / variable instead">Clear</button>`
     : '';
+  const shortName = String(schema.componentSetName || 'Variant');
   return `
     <div class="settings-bp-variant-row">
-      <span class="settings-bp-variant-label" title="${escHtml(schema.componentSetName)}">Variant</span>
+      <span class="settings-bp-variant-label" title="${escHtml(schema.componentSetName)}">${escHtml(shortName.length > 14 ? shortName.slice(0, 13) + '…' : shortName)}</span>
       ${selects}
       ${clearBtn}
     </div>
@@ -1371,47 +1433,93 @@ function renderVariantBanner() {
 
   const active = getActiveVariantSchema();
   const activeKey = active ? getSetStableKey(active) : null;
+  const isVariantDriver = state.driver === 'variant';
 
-  // Build the target picker — one <option> per candidate component set. We
-  // annotate each with its nested instance count + whether it looks like a
-  // breakpoint set (affinity > 0) so the user can pick confidently when the
-  // auto-pick grabs the wrong one. The option value is the stable key so the
-  // user's pick survives across files and library re-imports.
-  const options = candidates.map(c => {
-    const stableKey = getSetStableKey(c);
+  // One row per candidate set: an enable checkbox (the overlay) and — under
+  // the variant driver — a primary radio (which set's widths drive sizing).
+  // Keys are stable library keys so prefs survive across files.
+  const rows = candidates.map(c => {
+    const key = getSetStableKey(c);
+    const enabled = isSetEnabled(c);
+    const isPrimary = key === activeKey;
+    const forceOn = isVariantDriver && isPrimary;
     const tag = c.breakpointAffinity > 0 ? ' · breakpoint-like' : '';
-    const label = `${c.componentSetName} (${c.count})${tag}`;
-    return `<option value="${escHtml(stableKey)}" ${stableKey === activeKey ? 'selected' : ''}>${escHtml(label)}</option>`;
+    const radio = isVariantDriver
+      ? `<input type="radio" name="variant-primary" class="variant-set-primary" data-key="${escHtml(key)}" ${isPrimary ? 'checked' : ''} title="Primary — its variant widths drive frame sizing" />`
+      : '';
+    return `<label class="variant-set-row">
+      <input type="checkbox" class="variant-set-enable" data-key="${escHtml(key)}" ${enabled ? 'checked' : ''} ${forceOn ? 'disabled title="Primary set — always applied under the Variant driver"' : ''} />
+      ${radio}
+      <span class="vs-name" title="${escHtml(c.componentSetName)}">${escHtml(c.componentSetName)} (${c.count})${escHtml(tag)}</span>
+    </label>`;
   }).join('');
 
+  const enabledSets = getEnabledVariantSchemas();
+  const editing = getEditingVariantSchema();
+  const editKey = editing ? getSetStableKey(editing) : null;
+  const editOpts = enabledSets.map(c => {
+    const k = getSetStableKey(c);
+    return `<option value="${escHtml(k)}" ${k === editKey ? 'selected' : ''}>${escHtml(c.componentSetName)}</option>`;
+  }).join('');
+  const editRow = enabledSets.length ? `
+    <div class="variant-edit-row">
+      <span class="vs-label">Editing variants for</span>
+      <select id="variant-edit-select" style="font-size:11px; flex:1; min-width:0;">${editOpts}</select>
+      <button type="button" id="variant-automatch-btn">Auto-match</button>
+    </div>` : '';
+
   banner.innerHTML = `
-    <div style="display:flex; flex-direction:column; gap:6px; flex:1; min-width:0;">
-      <div style="font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em;">Variant target</div>
-      <select id="variant-target-select" style="font-size:11px;">${options}</select>
-    </div>
-    <button type="button" id="variant-automatch-btn" style="align-self:flex-end;">Auto-match</button>
+    <div class="vs-label">${isVariantDriver ? 'Variant sets — primary drives width' : 'Variant overlay — switch these per breakpoint'}</div>
+    ${rows}
+    ${editRow}
   `;
   banner.style.display = 'flex';
-  banner.style.alignItems = 'flex-start';
+  banner.style.flexDirection = 'column';
+  banner.style.alignItems = 'stretch';
 
-  const select = document.getElementById('variant-target-select');
-  if (select) {
-    select.addEventListener('change', e => {
-      state.variantTargetKey = e.target.value;
-      // New target might have different property names / options — re-run
+  banner.querySelectorAll('.variant-set-enable').forEach(cb => {
+    cb.addEventListener('change', e => {
+      const key = e.target.getAttribute('data-key');
+      state.variantSetPrefs = Object.assign({}, state.variantSetPrefs);
+      state.variantSetPrefs[key] = e.target.checked;
+      send({ type: 'save-variant-prefs', variantSetPrefs: state.variantSetPrefs });
+      if (!e.target.checked && state.variantEditKey === key) state.variantEditKey = null;
+      // A newly enabled set gets auto-matched straight away.
+      state.lastVariantSyncSig = null;
+      syncVariantPropsWithSchema();
+      renderVariantBanner();
+      renderSettingsBpList();
+      renderBpList();
+    });
+  });
+
+  banner.querySelectorAll('.variant-set-primary').forEach(radio => {
+    radio.addEventListener('change', e => {
+      state.variantTargetKey = e.target.getAttribute('data-key');
+      // New primary might have different property names / options — re-run
       // auto-match so each bp row fills in sensible defaults for the pick.
-      state.lastVariantSchemaKey = null;
+      state.lastVariantSyncSig = null;
       syncVariantPropsWithSchema();
       // Persist both — the stable key for cross-file restore and the local
       // node id as a hint for legacy migration on older installs.
-      const active = getActiveVariantSchema();
+      const nowActive = getActiveVariantSchema();
       send({
         type: 'save-variant-target',
         variantTargetKey: state.variantTargetKey,
-        variantTargetId: active ? active.componentSetId : null,
+        variantTargetId: nowActive ? nowActive.componentSetId : null,
       });
+      renderVariantBanner();
       renderSettingsBpList();
       renderBpList();
+    });
+  });
+
+  const editSel = document.getElementById('variant-edit-select');
+  if (editSel) {
+    editSel.addEventListener('change', e => {
+      state.variantEditKey = e.target.value; // session-only view cursor
+      renderVariantBanner();
+      renderSettingsBpList();
     });
   }
   const btn = document.getElementById('variant-automatch-btn');
@@ -1455,12 +1563,15 @@ function renderBpList() {
 
     const driver = state.driver === 'variant' ? 'variant' : 'width';
     const link = driver === 'width' ? getSelectedLink(bp) : null;
-    const activeSchema = driver === 'variant' ? getActiveVariantSchema() : null;
-    const activeProps = activeSchema ? getBpVariantProps(bp, getSetStableKey(activeSchema)) : null;
-    const hasVariant = !!(activeProps && Object.keys(activeProps).length);
+    const primarySchema = driver === 'variant' ? getActiveVariantSchema() : null;
+    const primaryProps = primarySchema ? getBpVariantProps(bp, getSetStableKey(primarySchema)) : null;
+    const hasPrimary = !!(primaryProps && Object.keys(primaryProps).length);
+    // The 'variant' tag reflects the whole overlay: ANY enabled set with
+    // picks for this bp will switch on generate, under either driver.
+    const hasVariant = getEnabledVariantSchemas().some(c => !!getBpVariantProps(bp, getSetStableKey(c)));
     let widthDisplay, tag = '';
     if (driver === 'variant') {
-      const w = hasVariant ? lookupVariantWidth(bp) : null;
+      const w = hasPrimary ? lookupVariantWidth(bp) : null;
       widthDisplay = (w !== null && w !== undefined) ? `${w}px` : '—';
     } else if (link && link.kind === 'variable') {
       widthDisplay = link.value !== null ? `~${link.value}px` : 'library';
@@ -1526,26 +1637,25 @@ function renderSettingsBpList() {
   if (widthCard) widthCard.style.display = driver === 'width' ? 'block' : 'none';
 
   renderWidthSource();
-  if (driver === 'variant') {
-    renderVariantBanner();
-    // No variant sets in the selection → prompt the user instead of a blank area.
-    if (!getActiveVariantSchema()) {
-      const vb = document.getElementById('variant-banner');
-      if (vb) {
-        vb.style.display = 'flex';
-        vb.innerHTML = '<span class="variant-banner-text">Select a component or instance with breakpoint variants on the canvas.</span>';
-      }
-    }
-  } else {
+  // The variant banner renders under BOTH drivers now — variants are an
+  // additive overlay. Under the width driver it simply stays hidden when the
+  // selection has no candidate sets; under the variant driver an empty
+  // selection gets a prompt (a primary set is a prerequisite there).
+  renderVariantBanner();
+  if (driver === 'variant' && !getActiveVariantSchema()) {
     const vb = document.getElementById('variant-banner');
-    if (vb) { vb.style.display = 'none'; vb.innerHTML = ''; }
+    if (vb) {
+      vb.style.display = 'flex';
+      vb.innerHTML = '<span class="variant-banner-text">Select a component or instance with breakpoint variants on the canvas.</span>';
+    }
   }
 
   const list = document.getElementById('settings-bp-list');
   list.innerHTML = '';
 
-  // Only the active driver contributes per-row controls.
-  const schema = driver === 'variant' ? getActiveVariantSchema() : null;
+  // Variant rows follow the set being edited (any enabled set, either driver);
+  // the width-source mode dropdown stays a width-driver concern.
+  const schema = getEditingVariantSchema();
   const widthCol = driver === 'width' ? getActiveWidthCollection() : null;
 
   state.breakpoints.forEach((bp, i) => {
@@ -1560,8 +1670,11 @@ function renderSettingsBpList() {
     const displayText = linkDisplayText(selected);
 
     const isModeLinked = driver === 'width' && !!selected && selected.kind === 'mode';
-    const activeProps = schema ? getBpVariantProps(bp, getSetStableKey(schema)) : null;
-    const hasVariantSet = !!(activeProps && Object.keys(activeProps).length);
+    // Width display under the variant driver keys off the PRIMARY set, not
+    // whichever set happens to be edited.
+    const primarySchema = driver === 'variant' ? getActiveVariantSchema() : null;
+    const primaryProps = primarySchema ? getBpVariantProps(bp, getSetStableKey(primarySchema)) : null;
+    const hasVariantSet = !!(primaryProps && Object.keys(primaryProps).length);
     const usingWidthSource = driver === 'width' && !!widthCol;
 
     // Disable the px field whenever something else drives width.
@@ -1691,13 +1804,14 @@ function renderSettingsBpList() {
     });
   });
 
-  // Variant property dropdowns — write through to bp.variantPropsBySet[activeSetId]
+  // Variant property dropdowns — write through to the EDITED set's slot in
+  // bp.variantPropsBySet.
   list.querySelectorAll('.bp-variant-select').forEach(el => {
     el.addEventListener('change', e => {
       const i = parseInt(e.target.dataset.index);
       const prop = e.target.dataset.prop;
       const bp = state.breakpoints[i];
-      const activeSchema = getActiveVariantSchema();
+      const activeSchema = getEditingVariantSchema();
       if (!activeSchema) return;
       const setId = getSetStableKey(activeSchema);
       const current = getBpVariantProps(bp, setId) || {};
@@ -1713,13 +1827,13 @@ function renderSettingsBpList() {
     });
   });
 
-  // Clear button — wipe the bp's slot for the active set in one click so the
-  // row falls back to the width/variable path immediately.
+  // Clear button — wipe the bp's slot for the EDITED set in one click; other
+  // sets' picks stay put.
   list.querySelectorAll('.bp-variant-clear').forEach(el => {
     el.addEventListener('click', e => {
       const i = parseInt(e.currentTarget.dataset.index);
       const bp = state.breakpoints[i];
-      const activeSchema = getActiveVariantSchema();
+      const activeSchema = getEditingVariantSchema();
       if (!activeSchema) return;
       setBpVariantProps(bp, getSetStableKey(activeSchema), null);
       persistAndSync();
@@ -2819,24 +2933,28 @@ document.getElementById('generate-btn').addEventListener('click', () => {
   setGenerateLoading(true);
   clearTimeout(statusTimer);
   document.getElementById('status').className = 'status';
-  // Build the payload for the active driver only, so the inactive driver's
-  // leftover per-bp data can't leak into the run.
+  // Variants are an additive overlay: every ENABLED set with picks for a bp
+  // ships as a variantSets entry, under either driver. The variant driver
+  // additionally nominates the primary set (its variant widths drive sizing)
+  // and drops width links so a stale mode/variable can't apply.
   const driver = state.driver === 'variant' ? 'variant' : 'width';
-  const activeSchema = driver === 'variant' ? getActiveVariantSchema() : null;
-  const activeKey = activeSchema ? getSetStableKey(activeSchema) : null;
+  const primarySchema = driver === 'variant' ? getActiveVariantSchema() : null;
+  const enabledSets = getEnabledVariantSchemas();
   const payloadBreakpoints = state.breakpoints.map(bp => {
-    if (driver === 'variant') {
-      // Variant drives; flatten this bp's slot and drop width links so a stale
-      // mode/variable can't apply on an unmatched row.
-      const slot = activeKey ? getBpVariantProps(bp, activeKey) : null;
-      return Object.assign({}, bp, {
-        variantProps: slot || null,
-        modeId: null, modeCollectionKey: null, modeCollectionId: null,
-        variableId: null, variableKey: null,
-      });
+    const variantSets = [];
+    for (const c of enabledSets) {
+      const props = getBpVariantProps(bp, getSetStableKey(c));
+      if (props) variantSets.push({ componentSetId: c.componentSetId, props: Object.assign({}, props) });
     }
-    // Width driver: never apply variants.
-    return Object.assign({}, bp, { variantProps: null });
+    const out = Object.assign({}, bp, {
+      variantSets: variantSets.length ? variantSets : null,
+      variantProps: null, // legacy field — superseded by variantSets
+    });
+    if (driver === 'variant') {
+      out.modeId = null; out.modeCollectionKey = null; out.modeCollectionId = null;
+      out.variableId = null; out.variableKey = null;
+    }
+    return out;
   });
 
   send({
@@ -2845,7 +2963,8 @@ document.getElementById('generate-btn').addEventListener('click', () => {
       sourceId: state.source.id,
       breakpoints: payloadBreakpoints,
       settings: state.settings,
-      variantTargetId: activeSchema ? activeSchema.componentSetId : null,
+      primaryVariantSetId: primarySchema ? primarySchema.componentSetId : null,
+      variantTargetId: primarySchema ? primarySchema.componentSetId : null, // alias for the legacy shim
     },
   });
 });
