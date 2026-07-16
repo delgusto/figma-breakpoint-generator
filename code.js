@@ -1454,7 +1454,40 @@ async function applyVariantSets(node, entries) {
       const main = await inst.getMainComponentAsync();
       if (!main || !main.parent) continue;
       const props = bySet.get(main.parent.id);
-      if (props) inst.setProperties(props);
+      if (!props) continue;
+
+      // Swapping the variant gives the instance the NEW variant's intrinsic
+      // width — a full-width header switched to a wider variant then overflows
+      // its frame. Capture how the instance was sized BEFORE the swap and
+      // restore the intent afterwards: instances that filled (or exactly
+      // spanned) their parent go back to filling; anything narrower (buttons,
+      // chips) keeps the new variant's own size. The generated root itself is
+      // exempt — its sizing belongs to the width/variant driver logic.
+      const isRoot = inst === node;
+      const parent = inst.parent;
+      const parentAuto = !isRoot && parent && 'layoutMode' in parent && parent.layoutMode && parent.layoutMode !== 'NONE';
+      let wasFill = false;
+      let spannedFull = false;
+      const preWidth = inst.width;
+      if (!isRoot && parent && 'width' in parent) {
+        try {
+          if (parentAuto) wasFill = inst.layoutSizingHorizontal === 'FILL';
+        } catch (err) {}
+        try {
+          const inner = parent.width - ((parent.paddingLeft || 0) + (parent.paddingRight || 0));
+          spannedFull = Math.abs(preWidth - inner) <= 1;
+        } catch (err) {}
+      }
+
+      inst.setProperties(props);
+
+      try {
+        if (parentAuto && (wasFill || spannedFull)) {
+          inst.layoutSizingHorizontal = 'FILL';
+        } else if (!isRoot && !parentAuto && spannedFull) {
+          inst.resize(preWidth, inst.height);
+        }
+      } catch (err) {}
     } catch (err) {}
   }
 }
