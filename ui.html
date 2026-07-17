@@ -201,7 +201,7 @@
       padding: 2px 6px; white-space: nowrap; flex-shrink: 0;
     }
 
-    /* ── Variant row inside each settings bp card ── */
+    /* ── Mode row inside each settings bp card (width source active) ── */
     .settings-bp-variant-row {
       display: flex; align-items: center; gap: 6px;
       margin-top: 6px;
@@ -212,20 +212,6 @@
       max-width: 40%; overflow: hidden; text-overflow: ellipsis;
       text-transform: uppercase; letter-spacing: 0.04em;
     }
-    .bp-variant-select {
-      flex: 1; font-size: 11px; padding: 4px 6px;
-      min-width: 0;
-    }
-    .bp-variant-clear {
-      flex-shrink: 0;
-      background: transparent; color: var(--muted);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      font-size: 10px; padding: 3px 7px;
-      cursor: pointer;
-      transition: color 0.12s, border-color 0.12s;
-    }
-    .bp-variant-clear:hover { color: var(--red); border-color: rgba(224,82,82,0.5); }
 
     /* Banner shown above settings list when a variant-driven instance is selected */
     .variant-banner {
@@ -247,13 +233,26 @@
       height: 26px; box-sizing: border-box;
     }
     .variant-banner button:hover { opacity: 0.85; }
-    .variant-banner .vs-label {
-      font-size: 10px; color: var(--muted);
-      text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap;
+    /* Swap components section — plain container, not the yellow banner chrome. */
+    .variant-banner.plain { background: transparent; border: none; padding: 0; margin-bottom: 8px; }
+    .vs-head-label { font-size: 12px; font-weight: 600; color: var(--text); }
+    .vs-head-sub { font-size: 11px; color: var(--dim); margin-bottom: 2px; }
+    .vs-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+    .vs-card + .vs-card { margin-top: 6px; }
+    .vs-card-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; min-width: 0; }
+    .vs-card-head input[type="checkbox"] { margin: 0; flex: none; }
+    .vs-card-title { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vs-status { font-size: 10.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vs-drives { font-size: 9.5px; font-weight: 600; color: var(--accent-ink); background: var(--accent); border-radius: 999px; padding: 2px 7px; flex: none; }
+    .variant-banner button.vs-edit-link {
+      font-size: 11px; color: var(--text); text-decoration: underline; cursor: pointer;
+      background: none; border: none; padding: 0; height: auto; font-weight: 500; flex: none;
     }
-    .variant-set-row { display: flex; align-items: center; gap: 6px; min-width: 0; cursor: pointer; }
-    .variant-set-row .vs-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .variant-edit-row { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+    .vs-editor { border-top: 1px solid var(--border); padding: 8px 10px 10px; }
+    .vs-edit-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .vs-edit-bp { font-size: 11px; color: var(--dim); width: 56px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vs-edit-row select { flex: 1; min-width: 0; font-size: 11px; }
+    .vs-editor-foot { display: flex; justify-content: flex-end; margin-top: 4px; }
 
     /* ── Inputs ── */
     input[type="text"], input[type="number"], select {
@@ -648,16 +647,17 @@
         <p class="wizard-step-desc">Choose what drives each breakpoint, then set them up below.</p>
       </div>
 
-      <!-- Driver: breakpoints are driven by Width OR Variant (mutually exclusive). -->
+      <!-- SECTION 1 · Frame width — what sizes each breakpoint frame. -->
       <div style="margin-bottom:10px;">
-        <div class="setting-label" style="margin-bottom:6px;">Breakpoints driven by</div>
+        <div class="setting-label" style="margin-bottom:2px;">Frame width</div>
+        <div class="setting-sub" style="margin-bottom:6px;">What sets each breakpoint’s width?</div>
         <div class="driver-toggle">
-          <button class="driver-opt" data-driver="width">Width</button>
-          <button class="driver-opt" data-driver="variant">Variant</button>
+          <button class="driver-opt" data-driver="width">Widths &amp; tokens</button>
+          <button class="driver-opt" data-driver="variant">A component’s variants</button>
         </div>
       </div>
 
-      <!-- Width source (shown when driver = Width). -->
+      <!-- Width source (shown when frame width = Widths & tokens). -->
       <div class="settings-card" id="width-source-card">
         <div class="setting-row stacked">
           <div>
@@ -673,8 +673,21 @@
         </div>
       </div>
 
-      <!-- Variant target (shown when driver = Variant). Populated by
-           renderVariantBanner() when the selection contains variant instances. -->
+      <!-- Primary set (shown when frame width = A component's variants). -->
+      <div class="settings-card" id="primary-set-card" style="display:none;">
+        <div class="setting-row stacked" style="border-bottom:none;">
+          <div>
+            <div class="setting-label">Width from set</div>
+            <div class="setting-sub">This set’s variant widths size each breakpoint frame.</div>
+          </div>
+          <div class="setting-control">
+            <select id="primary-set-select" style="width:100%; text-overflow:ellipsis;"></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- SECTION 2 · Swap components — sets whose instances switch variant per
+           breakpoint. Populated by renderVariantBanner(). -->
       <div id="variant-banner" class="variant-banner" style="display:none"></div>
       <div id="settings-bp-list"></div>
       <button class="btn-add" id="add-bp-btn">+ Add breakpoint</button>
@@ -1404,36 +1417,58 @@ function forceAutoMatchVariants() {
   renderBpList();
 }
 
-// Build the per-bp variant row: a <select> for each VARIANT property in the
-// schema plus a "Clear" button that wipes this bp's slot for the active set
-// in one click — so the row falls back to the width/variable path.
-function buildVariantRowHtml(schema, bp, i) {
-  const current = getBpVariantProps(bp, getSetStableKey(schema)) || {};
-  const hasAny = Object.keys(current).length > 0;
-  const selects = schema.properties.map(prop => {
-    const options = ['<option value="">— no change —</option>'].concat(
-      prop.options.map(opt =>
-        `<option value="${escHtml(opt)}" ${current[prop.name] === opt ? 'selected' : ''}>${escHtml(opt)}</option>`
-      )
-    ).join('');
-    return `<select class="bp-variant-select" data-index="${i}" data-prop="${escHtml(prop.name)}" title="${escHtml(prop.name)}">${options}</select>`;
+// ─── Swap components section ──────────────────────────────────────────────
+// One card per detected set: enable checkbox, a status line showing what will
+// switch at each breakpoint, and an inline per-breakpoint editor behind Edit.
+
+// Human summary of a set's per-bp picks: "All matched by name",
+// "XL → XL/LG · LG → XL/LG · MD · SM · XS", or a nudge when empty.
+function summarizeSetPicks(schema) {
+  const key = getSetStableKey(schema);
+  const parts = [];
+  let allByName = true;
+  let any = false;
+  for (const bp of state.breakpoints) {
+    const props = getBpVariantProps(bp, key);
+    const val = props ? schema.properties.map(p => props[p.name]).filter(Boolean).join(' / ') : '';
+    if (!val) { allByName = false; continue; }
+    any = true;
+    if (String(val).toLowerCase() === String(bp.label).toLowerCase()) {
+      parts.push(bp.label);
+    } else {
+      allByName = false;
+      parts.push(bp.label + ' → ' + val);
+    }
+  }
+  if (!any) return 'Nothing picked — open Edit, or Auto-match';
+  if (allByName && parts.length === state.breakpoints.length) return 'All matched by name';
+  return parts.join(' · ');
+}
+
+// The expanded editor inside a set card: one row per breakpoint, one select
+// per VARIANT property. "— no change —" leaves that breakpoint's instances
+// on whatever variant the source frame has.
+function buildSetEditorHtml(schema) {
+  const key = getSetStableKey(schema);
+  const rows = state.breakpoints.map((bp, i) => {
+    const current = getBpVariantProps(bp, key) || {};
+    const selects = schema.properties.map(prop => {
+      const opts = ['<option value="">— no change —</option>'].concat(
+        prop.options.map(o => `<option value="${escHtml(o)}" ${current[prop.name] === o ? 'selected' : ''}>${escHtml(o)}</option>`)
+      ).join('');
+      return `<select class="vs-bp-select" data-index="${i}" data-key="${escHtml(key)}" data-prop="${escHtml(prop.name)}" title="${escHtml(prop.name)}">${opts}</select>`;
+    }).join('');
+    return `<div class="vs-edit-row"><span class="vs-edit-bp" title="${escHtml(bp.label)}">${escHtml(bp.label)}</span>${selects}</div>`;
   }).join('');
-  const clearBtn = hasAny
-    ? `<button type="button" class="bp-variant-clear" data-index="${i}" title="Clear variant — use width / variable instead">Clear</button>`
-    : '';
-  const shortName = String(schema.componentSetName || 'Variant');
-  return `
-    <div class="settings-bp-variant-row">
-      <span class="settings-bp-variant-label" title="${escHtml(schema.componentSetName)}">${escHtml(shortName.length > 14 ? shortName.slice(0, 13) + '…' : shortName)}</span>
-      ${selects}
-      ${clearBtn}
-    </div>
-  `;
+  return `<div class="vs-editor">${rows}
+    <div class="vs-editor-foot"><button type="button" id="variant-automatch-btn" title="Re-match this set's variants to the breakpoint names">Auto-match</button></div>
+  </div>`;
 }
 
 function renderVariantBanner() {
   const banner = document.getElementById('variant-banner');
   if (!banner) return;
+  banner.classList.add('plain');
   const candidates = state.variantCandidates;
   if (!candidates.length) { banner.style.display = 'none'; banner.innerHTML = ''; return; }
 
@@ -1441,47 +1476,38 @@ function renderVariantBanner() {
   const activeKey = active ? getSetStableKey(active) : null;
   const isVariantDriver = state.driver === 'variant';
 
-  // One row per candidate set: an enable checkbox (the overlay) and — under
-  // the variant driver — a primary radio (which set's widths drive sizing).
-  // Keys are stable library keys so prefs survive across files.
-  const rows = candidates.map(c => {
+  // One card per candidate set. The primary set (variant driver) is chosen in
+  // the Frame width section above — here it just shows a "drives width" tag
+  // and can't be unticked. state.variantEditKey = which card is expanded.
+  const cards = candidates.map(c => {
     const key = getSetStableKey(c);
     const enabled = isSetEnabled(c);
-    const isPrimary = key === activeKey;
-    const forceOn = isVariantDriver && isPrimary;
-    const tag = c.breakpointAffinity > 0 ? ' · breakpoint-like' : '';
-    const radio = isVariantDriver
-      ? `<input type="radio" name="variant-primary" class="variant-set-primary" data-key="${escHtml(key)}" ${isPrimary ? 'checked' : ''} title="Primary — its variant widths drive frame sizing" />`
+    const isPrimary = isVariantDriver && key === activeKey;
+    const expanded = enabled && state.variantEditKey === key;
+    const status = enabled ? summarizeSetPicks(c) : 'Not switched';
+    const editLink = enabled
+      ? `<button type="button" class="vs-edit-link" data-key="${escHtml(key)}">${expanded ? 'Close' : 'Edit'}</button>`
       : '';
-    return `<label class="variant-set-row">
-      <input type="checkbox" class="variant-set-enable" data-key="${escHtml(key)}" ${enabled ? 'checked' : ''} ${forceOn ? 'disabled title="Primary set — always applied under the Variant driver"' : ''} />
-      ${radio}
-      <span class="vs-name" title="${escHtml(c.componentSetName)}">${escHtml(c.componentSetName)} (${c.count})${escHtml(tag)}</span>
-    </label>`;
+    return `<div class="vs-card">
+      <div class="vs-card-head">
+        <input type="checkbox" class="variant-set-enable" data-key="${escHtml(key)}" ${enabled ? 'checked' : ''} ${isPrimary ? 'disabled title="Sizes the frames — change it under Frame width"' : ''} />
+        <div style="flex:1; min-width:0;">
+          <div class="vs-card-title" title="${escHtml(c.componentSetName)}">${escHtml(c.componentSetName)} <span style="font-weight:400; color:var(--dim);">(${c.count})</span></div>
+          <div class="vs-status" title="${escHtml(status)}">${escHtml(status)}</div>
+        </div>
+        ${isPrimary ? '<span class="vs-drives">drives width</span>' : ''}
+        ${editLink}
+      </div>
+      ${expanded ? buildSetEditorHtml(c) : ''}
+    </div>`;
   }).join('');
-
-  const enabledSets = getEnabledVariantSchemas();
-  const editing = getEditingVariantSchema();
-  const editKey = editing ? getSetStableKey(editing) : null;
-  const editOpts = enabledSets.map(c => {
-    const k = getSetStableKey(c);
-    return `<option value="${escHtml(k)}" ${k === editKey ? 'selected' : ''}>${escHtml(c.componentSetName)}</option>`;
-  }).join('');
-  const editRow = enabledSets.length ? `
-    <div class="variant-edit-row">
-      <span class="vs-label">Editing variants for</span>
-      <select id="variant-edit-select" style="font-size:11px; flex:1; min-width:0;">${editOpts}</select>
-      <button type="button" id="variant-automatch-btn">Auto-match</button>
-    </div>` : '';
 
   banner.innerHTML = `
-    <div class="vs-label">${isVariantDriver ? 'Variant sets — primary drives width' : 'Variant overlay — switch these per breakpoint'}</div>
-    ${rows}
-    ${editRow}
+    <div class="vs-head-label">Swap components</div>
+    <div class="vs-head-sub">Ticked sets switch to the matching variant at each breakpoint.</div>
+    ${cards}
   `;
-  banner.style.display = 'flex';
-  banner.style.flexDirection = 'column';
-  banner.style.alignItems = 'stretch';
+  banner.style.display = 'block';
 
   banner.querySelectorAll('.variant-set-enable').forEach(cb => {
     cb.addEventListener('change', e => {
@@ -1494,42 +1520,56 @@ function renderVariantBanner() {
       state.lastVariantSyncSig = null;
       syncVariantPropsWithSchema();
       renderVariantBanner();
-      renderSettingsBpList();
       renderBpList();
     });
   });
 
-  banner.querySelectorAll('.variant-set-primary').forEach(radio => {
-    radio.addEventListener('change', e => {
-      state.variantTargetKey = e.target.getAttribute('data-key');
-      // New primary might have different property names / options — re-run
-      // auto-match so each bp row fills in sensible defaults for the pick.
-      state.lastVariantSyncSig = null;
-      syncVariantPropsWithSchema();
-      // Persist both — the stable key for cross-file restore and the local
-      // node id as a hint for legacy migration on older installs.
-      const nowActive = getActiveVariantSchema();
-      send({
-        type: 'save-variant-target',
-        variantTargetKey: state.variantTargetKey,
-        variantTargetId: nowActive ? nowActive.componentSetId : null,
-      });
+  banner.querySelectorAll('.vs-edit-link').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const key = e.currentTarget.getAttribute('data-key');
+      state.variantEditKey = state.variantEditKey === key ? null : key; // session-only
       renderVariantBanner();
-      renderSettingsBpList();
-      renderBpList();
     });
   });
 
-  const editSel = document.getElementById('variant-edit-select');
-  if (editSel) {
-    editSel.addEventListener('change', e => {
-      state.variantEditKey = e.target.value; // session-only view cursor
-      renderVariantBanner();
-      renderSettingsBpList();
+  // Per-breakpoint variant selects inside an expanded card.
+  banner.querySelectorAll('.vs-bp-select').forEach(el => {
+    el.addEventListener('change', e => {
+      const i = parseInt(e.target.dataset.index);
+      const key = e.target.dataset.key;
+      const prop = e.target.dataset.prop;
+      const bp = state.breakpoints[i];
+      if (!bp || !key) return;
+      const next = Object.assign({}, getBpVariantProps(bp, key) || {});
+      if (e.target.value) next[prop] = e.target.value;
+      else delete next[prop];
+      setBpVariantProps(bp, key, Object.keys(next).length ? next : null);
+      send({ type: 'save-settings', breakpoints: state.breakpoints, settings: state.settings });
+      renderBpList();
+      renderVariantBanner(); // refresh the status line
     });
-  }
+  });
+
   const btn = document.getElementById('variant-automatch-btn');
   if (btn) btn.addEventListener('click', forceAutoMatchVariants);
+}
+
+// Primary-set picker in the Frame width section (variant driver only).
+function renderPrimarySetCard() {
+  const card = document.getElementById('primary-set-card');
+  if (!card) return;
+  const show = state.driver === 'variant' && state.variantCandidates.length > 0;
+  card.style.display = show ? 'block' : 'none';
+  if (!show) return;
+  const active = getActiveVariantSchema();
+  const activeKey = active ? getSetStableKey(active) : null;
+  const sel = document.getElementById('primary-set-select');
+  if (!sel) return;
+  sel.innerHTML = state.variantCandidates.map(c => {
+    const k = getSetStableKey(c);
+    const tag = c.breakpointAffinity > 0 ? ' · breakpoint-like' : '';
+    return `<option value="${escHtml(k)}" ${k === activeKey ? 'selected' : ''}>${escHtml(c.componentSetName + ' (' + c.count + ')' + tag)}</option>`;
+  }).join('');
 }
 
 // ─── Render: source card ──────────────────────────────────────────────────────
@@ -1643,7 +1683,8 @@ function renderSettingsBpList() {
   if (widthCard) widthCard.style.display = driver === 'width' ? 'block' : 'none';
 
   renderWidthSource();
-  // The variant banner renders under BOTH drivers now — variants are an
+  renderPrimarySetCard();
+  // The Swap components section renders under BOTH drivers — variants are an
   // additive overlay. Under the width driver it simply stays hidden when the
   // selection has no candidate sets; under the variant driver an empty
   // selection gets a prompt (a primary set is a prerequisite there).
@@ -1651,6 +1692,7 @@ function renderSettingsBpList() {
   if (driver === 'variant' && !getActiveVariantSchema()) {
     const vb = document.getElementById('variant-banner');
     if (vb) {
+      vb.classList.remove('plain');
       vb.style.display = 'flex';
       vb.innerHTML = '<span class="variant-banner-text">Select a component or instance with breakpoint variants on the canvas.</span>';
     }
@@ -1659,9 +1701,8 @@ function renderSettingsBpList() {
   const list = document.getElementById('settings-bp-list');
   list.innerHTML = '';
 
-  // Variant rows follow the set being edited (any enabled set, either driver);
-  // the width-source mode dropdown stays a width-driver concern.
-  const schema = getEditingVariantSchema();
+  // Per-bp variant editing lives in the Swap components cards now — rows here
+  // are just name + width (+ the width-source mode dropdown when active).
   const widthCol = driver === 'width' ? getActiveWidthCollection() : null;
 
   state.breakpoints.forEach((bp, i) => {
@@ -1742,7 +1783,6 @@ function renderSettingsBpList() {
         </button>
       </div>
       ${controlHtml}
-      ${schema ? buildVariantRowHtml(schema, bp, i) : ''}
     `;
 
     list.appendChild(card);
@@ -1807,43 +1847,6 @@ function renderSettingsBpList() {
       setBpMode(bp, col, e.target.value || null);
       persistAndSync();
       renderSettingsBpList(); // refresh the disabled width value
-    });
-  });
-
-  // Variant property dropdowns — write through to the EDITED set's slot in
-  // bp.variantPropsBySet.
-  list.querySelectorAll('.bp-variant-select').forEach(el => {
-    el.addEventListener('change', e => {
-      const i = parseInt(e.target.dataset.index);
-      const prop = e.target.dataset.prop;
-      const bp = state.breakpoints[i];
-      const activeSchema = getEditingVariantSchema();
-      if (!activeSchema) return;
-      const setId = getSetStableKey(activeSchema);
-      const current = getBpVariantProps(bp, setId) || {};
-      const next = Object.assign({}, current);
-      if (e.target.value) {
-        next[prop] = e.target.value;
-      } else {
-        delete next[prop];
-      }
-      setBpVariantProps(bp, setId, Object.keys(next).length ? next : null);
-      persistAndSync();
-      renderSettingsBpList(); // re-render to show/hide the Clear button as state changes
-    });
-  });
-
-  // Clear button — wipe the bp's slot for the EDITED set in one click; other
-  // sets' picks stay put.
-  list.querySelectorAll('.bp-variant-clear').forEach(el => {
-    el.addEventListener('click', e => {
-      const i = parseInt(e.currentTarget.dataset.index);
-      const bp = state.breakpoints[i];
-      const activeSchema = getEditingVariantSchema();
-      if (!activeSchema) return;
-      setBpVariantProps(bp, getSetStableKey(activeSchema), null);
-      persistAndSync();
-      renderSettingsBpList();
     });
   });
 
@@ -2977,6 +2980,23 @@ document.getElementById('generate-btn').addEventListener('click', () => {
 
 // The auto-match button lives inside #variant-banner, which is re-rendered
 // by renderVariantBanner — bind there, not here.
+
+// Primary set picker (Frame width section, variant driver) — static element,
+// bind once. Same behaviour as the old target select: re-match, persist both
+// the stable key and the local id hint, re-render.
+document.getElementById('primary-set-select').addEventListener('change', e => {
+  state.variantTargetKey = e.target.value;
+  state.lastVariantSyncSig = null;
+  syncVariantPropsWithSchema();
+  const nowActive = getActiveVariantSchema();
+  send({
+    type: 'save-variant-target',
+    variantTargetKey: state.variantTargetKey,
+    variantTargetId: nowActive ? nowActive.componentSetId : null,
+  });
+  renderSettingsBpList();
+  renderBpList();
+});
 
 // Settings persist live (no Save button). Gap + the two remaining toggles get
 // their own change handlers so edits stick as soon as they're made.
