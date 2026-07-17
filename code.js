@@ -1459,33 +1459,35 @@ async function applyVariantSets(node, entries) {
       // Swapping the variant gives the instance the NEW variant's intrinsic
       // width — a full-width header switched to a wider variant then overflows
       // its frame. Capture how the instance was sized BEFORE the swap and
-      // restore the intent afterwards: instances that filled (or exactly
-      // spanned) their parent go back to filling; anything narrower (buttons,
-      // chips) keeps the new variant's own size. The generated root itself is
-      // exempt — its sizing belongs to the width/variant driver logic.
+      // restore the intent afterwards: instances that filled their parent, or
+      // whose width covered/exceeded it (a fixed-width bar cloned into a
+      // narrower frame), get pinned back to the parent's width; anything
+      // narrower (buttons, chips) keeps the new variant's own size. The
+      // generated root itself is exempt — its sizing belongs to the
+      // width/variant driver logic.
       const isRoot = inst === node;
       const parent = inst.parent;
       const parentAuto = !isRoot && parent && 'layoutMode' in parent && parent.layoutMode && parent.layoutMode !== 'NONE';
       let wasFill = false;
-      let spannedFull = false;
-      const preWidth = inst.width;
+      let coveredParent = false;
+      let innerWidth = null;
       if (!isRoot && parent && 'width' in parent) {
         try {
           if (parentAuto) wasFill = inst.layoutSizingHorizontal === 'FILL';
         } catch (err) {}
         try {
-          const inner = parent.width - ((parent.paddingLeft || 0) + (parent.paddingRight || 0));
-          spannedFull = Math.abs(preWidth - inner) <= 1;
+          innerWidth = parent.width - ((parent.paddingLeft || 0) + (parent.paddingRight || 0));
+          coveredParent = inst.width >= innerWidth - 1;
         } catch (err) {}
       }
 
       inst.setProperties(props);
 
       try {
-        if (parentAuto && (wasFill || spannedFull)) {
+        if (parentAuto && (wasFill || coveredParent)) {
           inst.layoutSizingHorizontal = 'FILL';
-        } else if (!isRoot && !parentAuto && spannedFull) {
-          inst.resize(preWidth, inst.height);
+        } else if (!isRoot && !parentAuto && coveredParent && innerWidth) {
+          inst.resize(innerWidth, inst.height);
         }
       } catch (err) {}
     } catch (err) {}
